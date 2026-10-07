@@ -1,0 +1,11 @@
+.venv312/
+build/
+dist/
+__pycache__/
+*.pyc
+installer/
+*.exe
+*.npy
+*.pt
+*.pth
+*.zip

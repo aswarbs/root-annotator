@@ -2,6 +2,7 @@
 #   pip install torch==2.14.0+cu126 --index-url https://download.pytorch.org/whl/cu126
 # Falls back to CPU automatically at runtime if no compatible GPU/driver is found.
 numpy>=1.24
+scipy>=1.10
 Pillow>=10.0
 PyQt6>=6.6
 pyinstaller>=6.10

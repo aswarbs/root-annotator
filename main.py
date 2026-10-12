@@ -1,7 +1,9 @@
 """Single entry point for Root Annotator.
 
     python main.py                          launch the GUI (falls back to CLI if no display)
-    python main.py --cli --model radicle --input data/ --out-dir output/
+    python main.py --web [--port 8765]      browser UI served from this machine (for headless
+                                             machines: forward the port over SSH and open it locally)
+    python main.py --cli --input data/ --out-dir output/
                                              force the terminal client
 
 The Windows build is packaged without a console window (see packaging/root_annotator.spec),
@@ -47,13 +49,19 @@ def _report_startup_failure(exc: Exception) -> None:
 
 
 def main() -> int:
+    if "--web" in sys.argv:
+        sys.argv.remove("--web")
+        from app.web.server import main as web_main
+        return web_main()
+
     if "--cli" in sys.argv:
         sys.argv.remove("--cli")
         from app.cli import main as cli_main
         return cli_main()
 
     if not _has_display():
-        print("no display detected -- falling back to the terminal client (pass --model/--input/--out-dir)\n")
+        print("no display detected -- use `--web` for the browser UI, or pass --input/--out-dir for the "
+              "terminal client\n")
         from app.cli import main as cli_main
         return cli_main()
 

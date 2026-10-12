@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from .engine_base import SliceCB
 from .sidecar import write_sidecar
+from .tiffstack import write_tiff_stack
 from .volumes import stack_scan_to_npy
 
 
@@ -20,9 +22,8 @@ class JobStatus:
 
 
 class JobRunner:
-    def __init__(self, engine, model_key: str, out_dir: Path):
+    def __init__(self, engine, out_dir: Path):
         self.engine = engine
-        self.model_key = model_key
         self.out_dir = out_dir
         self._cancelled = False
 
@@ -38,6 +39,7 @@ class JobRunner:
         on_job_status: Optional[Callable[[JobStatus], None]] = None,
         on_progress: Optional[Callable[[Path, Optional[float]], None]] = None,
         on_log: Optional[Callable[[str], None]] = None,
+        on_slice: SliceCB = None,
     ) -> List[JobStatus]:
         results: List[JobStatus] = []
         loaded = False
@@ -57,7 +59,7 @@ class JobRunner:
             try:
                 if not loaded:
                     if on_log:
-                        on_log(f"loading {self.model_key} model...")
+                        on_log("loading model...")
                     self.engine.load(progress_cb=lambda msg, frac=None: on_log and on_log(msg))
                     loaded = True
 
@@ -76,6 +78,7 @@ class JobRunner:
                 try:
                     result = self.engine.run(
                         run_path, self.out_dir, progress_cb=progress_cb, cancel_cb=self._is_cancelled,
+                        slice_cb=on_slice,
                     )
                 finally:
                     if volume.is_dir():
@@ -85,10 +88,14 @@ class JobRunner:
                         except OSError:
                             pass
 
+                tiff_dirs = [write_tiff_stack(o, progress_cb=lambda msg, frac=None: progress_cb(msg),
+                                              cancel_cb=self._is_cancelled) for o in result.outputs]
+
                 meta = {
-                    "model": self.model_key,
+                    "model": self.engine.display_name,
                     "input_volume": str(volume),
                     **stack_meta,
+                    "tiff_stack": [str(d) for d in tiff_dirs],
                     "device": result.device,
                     "elapsed_seconds": round(result.elapsed_s, 2),
                     **result.extra,

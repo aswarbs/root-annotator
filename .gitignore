@@ -9,3 +9,8 @@ installer/
 *.pt
 *.pth
 *.zip
+
+# the bundled model checkpoint is tracked on purpose
+!app/rootseg/checkpoints/*.pt
+*.proj.npz
+temp/

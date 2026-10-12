@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Root Annotator</title>
+<style>
+:root{--bg:#f6f6f4;--panel:#fff;--ink:#1d2421;--mute:#68726d;--line:#dcdfdb;--accent:#1f6f5c;--accent-ink:#fff;--warn:#b3402f;--canvas:#101412}
+@media (prefers-color-scheme:dark){:root{--bg:#121513;--panel:#1a1e1c;--ink:#e6eae7;--mute:#98a39d;--line:#2d3532;--accent:#4aa58b;--accent-ink:#08130f;--warn:#e08a7a;--canvas:#0a0c0b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.page{max-width:760px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:22px;font-weight:650;margin:0 0 22px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px 20px;margin-bottom:16px}
+h2{font-size:15px;font-weight:650;margin:0 0 12px}
+h2 span{color:var(--mute);font-weight:500;margin-right:6px}
+input[type=text]{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit}
+input[type=text]:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button{padding:8px 16px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font:inherit;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--accent)}button:disabled{opacity:.5;cursor:default}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+button.link{border:0;background:none;padding:2px 4px;color:var(--accent);text-decoration:underline}
+button.link.warn{color:var(--warn)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.mute{color:var(--mute);font-size:13px}
+.sp{height:10px}
+[hidden]{display:none!important}
+#browser{border:1px solid var(--line);border-radius:6px;margin-top:12px;padding:10px}
+#list{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;margin:8px 0}
+#list div{padding:5px 10px;display:flex;justify-content:space-between;cursor:pointer}
+#list div:hover{background:var(--bg)}
+.item{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--line);word-break:break-all}
+.item:first-child{border-top:0}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:12px}
+.bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
+table{width:100%;border-collapse:collapse}
+td{padding:9px 6px;border-top:1px solid var(--line);vertical-align:middle}
+tr:first-child td{border-top:0}
+td.act{text-align:right;white-space:nowrap}
+.err{color:var(--warn)}
+#stage{background:var(--canvas);border-radius:6px;aspect-ratio:1;max-height:560px;margin:0 auto;display:flex;align-items:center;justify-content:center;overflow:hidden}
+#stage img{max-width:100%;max-height:100%;object-fit:contain}
+.seg{display:inline-flex}.seg button{border-radius:0;margin-left:-1px;padding:6px 14px}.seg button:first-child{border-radius:6px 0 0 6px;margin-left:0}.seg button:last-child{border-radius:0 6px 6px 0}
+.seg button.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);position:relative}
+#zs{flex:1;min-width:160px;accent-color:var(--accent)}
+</style></head><body>
+<div class="page">
+<h1>Root Annotator</h1>
+
+<section>
+  <h2><span>1</span>Choose volumes</h2>
+  <div id="chosen"></div>
+  <div class="row"><button id="addbtn">Add volumes…</button></div>
+  <div id="browser" hidden>
+    <div class="row"><input type="text" id="path" placeholder="Folder path" style="flex:1"><button id="go">Go</button></div>
+    <div id="list"></div>
+    <div class="row"><button id="addhere">Add this folder</button><span class="mute">or click a file to add just that one</span><button id="closebrowser" class="link" style="margin-left:auto">Close</button></div>
+  </div>
+</section>
+
+<section>
+  <h2><span>2</span>Choose where to save results</h2>
+  <input type="text" id="outdir" placeholder="Output folder" title="Results are saved here. Leave it as it is unless you want them somewhere else.">
+  <div class="sp"></div>
+  <div class="row"><button class="primary" id="start" disabled>Segment</button><button id="cancel" hidden>Cancel</button><span class="mute" id="hint"></span></div>
+  <div class="bar" id="barwrap" hidden><i id="bar"></i></div>
+  <div class="mute" id="runtext" style="margin-top:6px"></div>
+</section>
+
+<section id="viewer" hidden>
+  <h2 id="vtitle">Viewer</h2>
+  <div class="row" id="modes" style="margin-bottom:10px">
+    <div class="seg" id="modeseg"><button data-mode="projection">Projection</button><button data-mode="slices">Slices</button></div>
+    <div class="seg" id="viewseg"><button data-v="side">Side</button><button data-v="front">Front</button><button data-v="top">Top-down</button></div>
+  </div>
+  <div id="stage"></div>
+  <div class="sp"></div>
+  <div class="row" id="sliderrow"><input type="range" id="zs" min="1" max="1" value="1"><span class="mute" id="zl"></span></div>
+  <div class="sp"></div>
+  <div class="row" id="vactions"></div>
+</section>
+
+<section id="results-sec" hidden>
+  <h2><span>3</span>Results</h2>
+  <table id="results"></table>
+</section>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const api=(p,b)=>fetch(p,b?{method:'POST',body:JSON.stringify(b)}:{}).then(async r=>{const j=await r.json();if(r.status===404&&j.error==='not found')throw new Error('The server is out of date. Restart it, then reload this page.');if(!r.ok)throw new Error(j.error||r.status);return j});
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const store={get(k,d){try{return JSON.parse(localStorage[k])}catch(e){return d}},set(k,v){try{localStorage[k]=JSON.stringify(v)}catch(e){}}};
+
+let browseRoot='/',checkErr='',chosen=store.get('ra_chosen',[]),cwd='',volumes=[],snap={jobs:[],running:false},wasRunning=false;
+const diffOn=()=>!!(info&&info.cleaned&&!kept.has(current));
+let prevCleaning=false,prevRunning=false,mode='projection',pview='side',current=null,autoFollow=true,info=null,kept=new Set(store.get('ra_kept',[]));
+let chosenDirs=new Set(store.get('ra_dirs',[])),defaultOut='',outAuto=store.get('ra_out_auto',true);
+$('#outdir').value=store.get('ra_out','');
+const vname=p=>p.split('/').pop();
+
+/* ---- 1. choose volumes ---- */
+async function browse(p){
+  try{const r=await api('/api/browse?path='+encodeURIComponent(p||''));cwd=r.path;$('#path').value=cwd;
+    $('#list').innerHTML='<div data-p="'+esc(r.parent)+'" data-d="1"><b>..</b></div>'+r.entries.map(e=>
+      '<div data-p="'+esc(r.path+'/'+e.name)+'" data-d="'+(e.dir?1:0)+'"><span>'+esc(e.name)+(e.dir?'/':'')+'</span><span class="mute">'+(e.dir?'':(e.size/1e9).toFixed(2)+' GB')+'</span></div>').join('');
+  }catch(e){$('#list').textContent=e.message}}
+$('#addbtn').onclick=()=>{$('#browser').hidden=false;browse(cwd||browseRoot)};
+$('#closebrowser').onclick=()=>$('#browser').hidden=true;
+$('#list').onclick=e=>{const d=e.target.closest('div[data-p]');if(!d)return;d.dataset.d==='1'?browse(d.dataset.p):add(d.dataset.p,false)};
+$('#go').onclick=()=>browse($('#path').value);$('#path').onkeydown=e=>e.key==='Enter'&&browse($('#path').value);
+$('#addhere').onclick=()=>add(cwd,true);
+function add(p,isDir){if(!chosen.includes(p))chosen.push(p);if(isDir)chosenDirs.add(p);changed()}
+/* Until the user types their own, the output folder is "annotations" next to the first volume
+   (so earlier results are found again), or the server's default when nothing is chosen yet. */
+function autoOut(){if(!outAuto)return;const p=chosen[0];
+  $('#outdir').value=p?(chosenDirs.has(p)?p.replace(/\/$/,''):p.replace(/\/[^\/]*$/,'')||'')+'/annotations':defaultOut}
+function renderChosen(){$('#chosen').innerHTML=chosen.map((p,i)=>'<div class="item"><span>'+esc(p)+'</span><button class="link warn" data-i="'+i+'">Remove</button></div>').join('')+(chosen.length?'<div class="sp"></div>':'')}
+$('#chosen').onclick=e=>{const i=e.target.dataset.i;if(i!==undefined){chosen.splice(+i,1);changed()}};
+$('#outdir').oninput=()=>{outAuto=false;store.set('ra_out_auto',false);store.set('ra_out',$('#outdir').value);clearTimeout(changed.t);changed.t=setTimeout(refresh,400)};
+function changed(){autoOut();store.set('ra_dirs',[...chosenDirs]);store.set('ra_out_auto',outAuto);store.set('ra_chosen',chosen);store.set('ra_out',$('#outdir').value);renderChosen();refresh()}
+
+/* ---- 2. segment ---- */
+$('#start').onclick=async()=>{try{await api('/api/run',{inputs:chosen,out_dir:$('#outdir').value});autoFollow=true;$('#hint').textContent=''}catch(e){$('#hint').textContent=e.message}poll()};
+$('#cancel').onclick=()=>api('/api/cancel',{});
+async function redo(path){try{await api('/api/run',{inputs:chosen,out_dir:$('#outdir').value,redo:[path]});autoFollow=true}catch(e){$('#hint').textContent=e.message}poll()}
+
+/* ---- 3. results ---- */
+async function refresh(){
+  if(!chosen.length||!$('#outdir').value.trim()){volumes=[];renderAll();return}
+  try{volumes=(await api('/api/check',{inputs:chosen,out_dir:$('#outdir').value})).volumes;checkErr=''}catch(e){volumes=[];checkErr=e.message}
+  renderAll()}
+function status(v){
+  const j=snap.jobs.find(j=>j.path===v.path);
+  if(j&&j.state==='running')return{t:'Segmenting… '+Math.round(snap.progress*100)+'%',view:true};
+  if(j&&j.state==='queued')return{t:'Waiting'};
+  if(j&&j.state==='failed')return{t:'Failed: '+j.message,err:true};
+  if(j&&j.state==='cancelled')return{t:v.done?'Segmented':'Cancelled',view:v.done,redo:v.done};
+  return v.done?{t:'Segmented',view:true,redo:!snap.running}:{t:'Not segmented yet'}}
+function renderAll(){
+  const pending=volumes.filter(v=>!v.done).length;
+  $('#start').disabled=snap.running||!pending;
+  $('#hint').textContent=snap.running?'A run is in progress.':!chosen.length?'Add at least one volume first.':!$('#outdir').value.trim()?'Choose an output folder.':checkErr?'Could not read the chosen volumes: '+checkErr+' (if this says "not found", restart the server).':!volumes.length?'No volumes found in what you chose.':pending?pending+' to segment'+(volumes.length>pending?', '+(volumes.length-pending)+' already done':''):'Everything chosen is already segmented. Use Redo in Results to run one again.';
+  $('#cancel').hidden=!snap.running;
+  $('#results-sec').hidden=!volumes.length;
+  $('#results').innerHTML=volumes.map((v,i)=>{const s=status(v);
+    return '<tr><td>'+esc(v.name)+'</td><td class="'+(s.err?'err':'mute')+'">'+esc(s.t)+'</td><td class="act">'+
+      (s.view?'<button data-view="'+i+'">View</button> ':'')+(s.redo?'<button class="link" data-redo="'+i+'">Redo</button>':'')+'</td></tr>'}).join('')}
+$('#results').onclick=e=>{const v=e.target.dataset.view,r=e.target.dataset.redo;
+  if(v!==undefined){current=volumes[+v].path;autoFollow=false;mode='projection';resetView();$('#viewer').scrollIntoView({behavior:'smooth',block:'nearest'})}
+  if(r!==undefined&&confirm('Segment this volume again? The current result will be replaced.'))redo(volumes[+r].path)};
+
+/* ---- viewer ---- */
+let shown='',loading=false,fresh=true;
+function resetView(){info=null;shown='';fresh=true;$('#stage').replaceChildren();viewerTick()}
+async function viewerTick(){
+  if(!current){$('#viewer').hidden=true;return}
+  $('#viewer').hidden=false;$('#vtitle').textContent=vname(current);
+  let i;try{i=await api('/api/view?vol='+encodeURIComponent(current)+'&out='+encodeURIComponent($('#outdir').value))}catch(e){return}
+  if(!i.available){if(!snap.running&&!volumes.find(v=>v.path===current&&v.done)){$('#stage').textContent='No result yet.'}return}
+  info=i;const zs=$('#zs'),atLatest=+zs.value>=+zs.max;
+  zs.max=Math.max(1,i.done);
+  if(fresh){zs.value=i.running?i.done:Math.max(1,Math.round(i.done/2));fresh=false}
+  else if(i.running&&atLatest)zs.value=i.done;
+  const ct=i.clean_task,cleaning=!!(ct&&ct.state==='running'&&ct.kind==='clean');
+  if(prevRunning&&!i.running)mode='projection';prevRunning=i.running;
+  if(prevCleaning&&!cleaning)mode='projection';prevCleaning=cleaning;
+  if(i.running)mode='slices';
+  if(cleaning&&ct.written>0)zs.value=Math.min(+zs.max,Math.max(1,ct.written-1));
+  $('#modeseg').hidden=i.running;$('#viewseg').hidden=mode!=='projection';$('#sliderrow').hidden=mode!=='slices';
+  for(const b of document.querySelectorAll('#modeseg button'))b.classList.toggle('on',b.dataset.mode===mode);
+  for(const b of document.querySelectorAll('#viewseg button'))b.classList.toggle('on',b.dataset.v===pview);
+  mode==='projection'?drawProjection():drawFrame();renderActions()}
+$('#modeseg').onclick=e=>{const m=e.target.dataset.mode;if(m){mode=m;shown='';viewerTick()}};
+$('#viewseg').onclick=e=>{const v=e.target.dataset.v;if(v){pview=v;shown='';viewerTick()}};
+let projBusy=false;
+async function drawProjection(){
+  if(!info||projBusy)return;
+  const ctw=info.clean_task&&info.clean_task.state==='running'?info.clean_task.written:0;
+  const key=['p',current,pview,info.cleaned,diffOn(),ctw].join('|');if(key===shown)return;
+  projBusy=true;const q='vol='+encodeURIComponent(current)+'&out='+encodeURIComponent($('#outdir').value)+'&diff='+(diffOn()?1:0);
+  try{
+    for(;;){const st=await api('/api/proj.status?'+q);
+      if(st.state==='ready')break;if(st.state==='failed')throw new Error(st.message);
+      $('#stage').textContent='Preparing the projection (first time only)… '+Math.round(st.progress*100)+'%';await new Promise(r=>setTimeout(r,600))}
+    const img=new Image();await new Promise((res,rej)=>{img.onload=res;img.onerror=()=>rej(new Error('could not draw the projection'));img.src='/api/proj.png?'+q+'&view='+pview+'&t='+Date.now()});
+    if(mode==='projection'){$('#stage').replaceChildren(img);shown=key}
+  }catch(e){$('#stage').textContent=e.message}
+  projBusy=false}
+function drawFrame(){
+  if(!info||loading)return;const z=Math.min(+$('#zs').value,info.done);
+  const ctw=info.clean_task&&info.clean_task.state==='running'?info.clean_task.written:0;
+  const key=[current,z,info.cleaned,diffOn(),info.running?info.done:0,ctw].join('|');if(key===shown)return;
+  loading=true;const img=new Image();
+  img.onload=()=>{$('#stage').replaceChildren(img);shown=key;loading=false};
+  img.onerror=()=>{loading=false};
+  img.src='/api/frame.png?vol='+encodeURIComponent(current)+'&out='+encodeURIComponent($('#outdir').value)+'&z='+z+'&diff='+(diffOn()?1:0)+'&t='+Date.now();
+  $('#zl').textContent='Slice '+z}
+$('#zs').oninput=()=>{shown='';drawFrame()};
+function renderActions(){
+  const a=$('#vactions'),t=info.clean_task,busy=t&&t.state==='running',sig=[info.running,info.cleaned,t&&t.state,t&&t.kind,kept.has(current)].join();
+  if(busy&&t.kind==='clean'&&$('#cp')){const pc=Math.round(t.progress*100);$('#cp').textContent='Cleaning up… '+pc+'%';$('#cbari').style.width=pc+'%'}
+  if(a.dataset.sig===sig)return;a.dataset.sig=sig;
+  if(info.running){a.innerHTML='<span class="mute">Segmenting… you can drag the slider to look back.</span>'}
+  else if(busy&&t.kind==='clean'){a.innerHTML='<div style="width:100%"><span class="mute" id="cp"></span><div class="bar" style="margin-top:8px"><i id="cbari"></i></div></div>'}
+  else if(busy){a.innerHTML='<span class="mute">Saving the cleaned result…</span>'}
+  else if(info.cleaned&&!kept.has(current)){a.innerHTML='<span>Clean-up applied. <span style="color:#d98a1d">Orange</span> shows what was removed. Keep it?</span><button class="primary" id="keep">Keep</button><button id="undo">Undo</button>'}
+  else if(info.cleaned){a.innerHTML='<span class="mute">Cleaned result shown.</span><button class="link warn" id="undo">Undo clean-up</button>'}
+  else{a.innerHTML='<button id="clean">Clean up</button>'+(t&&t.state==='failed'?'<span class="err">'+esc(t.message)+'</span>':'')+'<span class="mute">Removes small specks that are probably not roots.</span>'}
+  const on=(id,f)=>{const b=$('#'+id);if(b)b.onclick=f};
+  const body=()=>({vol:current,out_dir:$('#outdir').value});
+  on('clean',async()=>{try{await api('/api/cleanup',body())}catch(e){alert(e.message)}a.dataset.sig='';viewerTick()});
+  on('keep',async()=>{kept.add(current);store.set('ra_kept',[...kept]);try{await api('/api/keep_cleanup',body())}catch(e){alert(e.message)}a.dataset.sig='';shown='';viewerTick()});
+  on('undo',async()=>{await api('/api/undo_cleanup',body());kept.delete(current);store.set('ra_kept',[...kept]);a.dataset.sig='';shown='';viewerTick()})}
+
+/* ---- polling ---- */
+async function poll(){
+  try{snap=await api('/api/state');
+    const run=snap.jobs.find(j=>j.state==='running'),n=snap.jobs.length,doneN=snap.jobs.filter(j=>j.state==='done').length;
+    $('#barwrap').hidden=!snap.running;$('#bar').style.width=((doneN+snap.progress)/Math.max(n,1)*100)+'%';
+    $('#runtext').textContent=snap.running&&run?'Segmenting '+(doneN+1)+' of '+n+': '+run.name+(snap.device?' ('+(snap.device==='cuda'?'GPU':'CPU')+')':''):'';
+    if(snap.running&&run&&autoFollow&&current!==run.path){current=run.path;resetView()}
+    if(wasRunning&&!snap.running){await refresh();shown=''}
+    wasRunning=snap.running;renderAll();await viewerTick()
+  }catch(e){$('#runtext').textContent='Lost connection to the server…'}
+  setTimeout(poll,700)}
+api('/api/state').then(s=>{defaultOut=s.default_out;browseRoot=s.browse_root;if(!$('#outdir').value||outAuto){autoOut()}refresh()}).catch(()=>{});
+renderChosen();poll();
+</script></body></html>

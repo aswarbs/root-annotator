@@ -10,6 +10,8 @@ Two input kinds are understood:
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
+from .tiffstack import TIFF_DIR_SUFFIXES
+
 import numpy as np
 
 SLICE_EXTS = {".tif", ".tiff", ".bmp"}
@@ -18,9 +20,18 @@ _STATS_SLICES = 64  # slices sampled for the 16-bit -> 8-bit percentile stretch
 _P_LOW, _P_HIGH = 0.5, 99.5
 
 
+_DERIVED_SUFFIXES = ("_mask", "_rootseg_pred", "_rootseg_pred_clean")  # ground truth / our own outputs
+
+
+def _is_derived_npy(f: Path) -> bool:
+    """Masks and earlier predictions sitting next to the scans are not volumes to segment."""
+    return f.stem.lower().endswith(_DERIVED_SUFFIXES)
+
+
 def _is_output_name(name: str) -> bool:
     n = name.lower()
-    return "output" in n or "ouput" in n  # the dataset has an "ouput" folder typo
+    # the dataset has an "ouput" folder typo; our own TIFF-stack annotations are not scans either
+    return "output" in n or "ouput" in n or n.endswith(TIFF_DIR_SUFFIXES)
 
 
 def _is_input_name(name: str) -> bool:
@@ -52,7 +63,8 @@ def _input_slice_dir(scan: Path) -> Optional[Path]:
 
 def _find_scans(d: Path, depth: int, found: set) -> None:
     for f in sorted(d.glob("*.npy")):
-        found.add(f.resolve())
+        if not _is_derived_npy(f):
+            found.add(f.resolve())
     if _input_slice_dir(d) is not None and not _is_output_name(d.name):
         # a slice folder named *input* stands for its parent scan folder
         found.add((d.parent if slice_files(d) and _is_input_name(d.name) else d).resolve())

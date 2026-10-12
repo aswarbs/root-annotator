@@ -1,6 +1,4 @@
-"""Common interface both model engines (radicle, rootseg) implement, so the GUI/CLI/job runner
-never need to know which model they're driving.
-"""
+"""Shared types for the model engine and the job runner / GUIs that drive it."""
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -12,21 +10,22 @@ CancelCB = Optional[Callable[[], bool]]
 
 
 @dataclass
+class LiveInfo:
+    """Where a running volume's input and (partially written) prediction live, so a viewer can
+    read any already-finished slice. Prediction slices < `done` are final."""
+    input_path: Path
+    pred_path: Path
+    shape: tuple
+    done: int  # highest slice index written so far
+
+
+# slice_cb(live_info) -- called after every predicted slice
+SliceCB = Optional[Callable[[LiveInfo], None]]
+
+
+@dataclass
 class RunResult:
     outputs: List[Path]
     device: str
     elapsed_s: float
     extra: Dict = field(default_factory=dict)
-
-
-class Engine:
-    key: str = ""
-    display_name: str = ""
-
-    def load(self, progress_cb: ProgressCB = None) -> None:
-        """Load checkpoint(s) into memory. Safe to call once and reuse across many run() calls."""
-        raise NotImplementedError
-
-    def run(self, volume_path: Path, out_dir: Path, progress_cb: ProgressCB = None,
-            cancel_cb: CancelCB = None) -> RunResult:
-        raise NotImplementedError

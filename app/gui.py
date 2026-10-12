@@ -218,9 +218,9 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.start_btn = QPushButton("Segment")
         self.start_btn.setObjectName("Primary")
-        self.start_btn.clicked.connect(self._start)
+        self.start_btn.clicked.connect(lambda _checked=False: self._start())
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.clicked.connect(self.session.cancel)
+        self.cancel_btn.clicked.connect(lambda _checked=False: self.session.cancel())
         self.cancel_btn.hide()
         self.hint = mute()
         row.addWidget(self.start_btn)
@@ -407,10 +407,11 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ running
 
-    def _start(self, redo=()) -> None:
+    def _start(self, redo=None) -> None:
+        redo = list(redo or [])
         self.run_error = ""
         try:
-            self.session.start_run([Path(p).expanduser() for p in self.chosen], self._out_dir(), list(redo))
+            self.session.start_run([Path(p).expanduser() for p in self.chosen], self._out_dir(), redo)
             self.auto_follow = True
         except Exception as exc:
             self.run_error = str(exc)

@@ -9,7 +9,9 @@ import numpy as np
 _MAX_SIDE = 1100
 
 
-def render_live_frame(input_path, pred_path: Path, z: int, removed_from: Path = None) -> np.ndarray:
+def render_live_frame(input_path, pred_path: Path, z: int, removed_from: Path = None,
+                      overlay: bool = True) -> np.ndarray:
+    """`overlay=False` gives the plain CT slice (needs `input_path`), without the predicted roots."""
     vol = np.load(str(input_path), mmap_mode="r") if input_path else None  # None: scan folder, input gone
     pred = np.load(str(pred_path), mmap_mode="r")
     try:
@@ -21,9 +23,10 @@ def render_live_frame(input_path, pred_path: Path, z: int, removed_from: Path = 
     lo, hi = np.percentile(img[::4, ::4], [1, 99])
     gray = np.clip((img.astype(np.float32) - lo) / max(float(hi - lo), 1.0), 0, 1) * 255
     rgb = np.stack([gray] * 3, axis=-1)
-    a = np.clip(pr, 0, 1)[..., None] * 0.75
-    rgb = rgb * (1 - a) + np.array([255, 40, 40], np.float32) * a
-    if raw is not None:  # what a clean-up took out, so its effect is visible
+    if overlay:
+        a = np.clip(pr, 0, 1)[..., None] * 0.75
+        rgb = rgb * (1 - a) + np.array([255, 40, 40], np.float32) * a
+    if overlay and raw is not None:  # what a clean-up took out, so its effect is visible
         gone = ((raw >= 0.5) & (pr < 0.5))[..., None] * 0.8
         rgb = rgb * (1 - gone) + np.array([255, 170, 40], np.float32) * gone
     rgb = rgb.astype(np.uint8)

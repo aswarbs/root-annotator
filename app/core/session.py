@@ -162,12 +162,15 @@ class Session:
         return {"available": True, "n": n, "done": done, "running": running, "cleaned": cleaned,
                 "progress": self.progress if running else 1.0, "clean_task": task}
 
-    def frame(self, volume: Path, out_dir: Path, z: int, diff: bool = False):
+    def frame(self, volume: Path, out_dir: Path, z: int, diff: bool = False, overlay: bool = True):
+        """One slice as RGB. `overlay=False` is the plain scan; None if the scan itself is gone."""
         v = self._view(volume, out_dir)
         if v is None:
             return None
         inp, pred, _n, done, running = v
         z = max(1, min(z if z is not None else done, done))
+        if not overlay:
+            return render_live_frame(inp, pred, z, overlay=False) if inp else None
         clean = clean_path_for(pred)
         cleaning = next((t for t in self.tasks.values() if t["path"] == str(pred) and t["state"] == "running"
                          and t.get("kind", "clean") == "clean"), None)

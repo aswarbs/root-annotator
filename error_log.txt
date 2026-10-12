@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "C:\Users\psyas17\Documents\phd\root-annotator\main.py", line 61, in main
+    from app.gui import run_gui
+  File "C:\Users\psyas17\Documents\phd\root-annotator\app\gui.py", line 9, in <module>
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal
+ModuleNotFoundError: No module named 'PyQt6'
+
+Traceback (most recent call last):
+  File "C:\Users\psyas17\Documents\phd\root-annotator\main.py", line 69, in main
+    from app.gui import run_gui
+  File "C:\Users\psyas17\Documents\phd\root-annotator\app\gui.py", line 24, in <module>
+    from .core.postprocess import CLEAN_SUFFIX, clean_path_for, CLEAN_MIN_SIZE, clean_prediction
+  File "C:\Users\psyas17\Documents\phd\root-annotator\app\core\postprocess.py", line 14, in <module>
+    from scipy import ndimage
+ModuleNotFoundError: No module named 'scipy'
+

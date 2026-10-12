@@ -4,8 +4,9 @@ One lightweight app for running **RootSeg-LSTM** (the `e4_skips_bal` checkpoint)
 volumes, watching the slices come out live, looking at the result as a 2D projection, and cleaning
 up noise. Results are also written as **TIFF stacks**. Add volumes, run, get a prediction + a provenance JSON per output.
 
-Three front ends over the same core: a PyQt6 GUI (default), a **browser UI** for headless
-machines, and a terminal client.
+Three front ends over the same core (`app/core/session.py`): a PyQt6 GUI (default), a **browser
+UI** for headless machines, and a terminal client. The GUI and the browser UI share the same
+single-column flow: choose volumes, choose an output folder, Segment, viewer, results.
 
 ## The model
 
@@ -23,13 +24,14 @@ app/
   rootseg/        model.py, norm.py, tiling.py (vendored from rootseg-lstm) + checkpoints/
   core/
     engine.py       loads the checkpoint, runs a volume, streams the prediction to disk
+    session.py      run / viewer / clean-up state shared by the GUI and the browser UI
     jobs.py         runs a batch of volumes, reports progress / per-slice live events
     live.py         renders one input+prediction slice (live view)
     projection.py   max-intensity projections for the visualiser (cached next to the result)
     postprocess.py  noise clean-up: threshold + remove small 3D components
     tiffstack.py    writes a prediction as a folder of per-slice 8-bit TIFFs
     volumes.py, sidecar.py, paths.py
-  gui.py          PyQt6 window: queue, live view, Visualise, Clean up
+  gui.py          PyQt6 window (thin view over core/session.py)
   web/            browser UI (stdlib http.server + static pages)
   cli.py          terminal client
 main.py           entry point

@@ -1,180 +1,52 @@
-"""PyQt6 front end, kept deliberately simple: drag in volumes (or use the file/folder pickers),
-pick an output folder, hit Start. Built for lab users who aren't computer people -- big buttons,
-plain language, no log console, a warm colour scheme instead of a default-grey dev tool.
+"""PyQt6 front end. One column, same flow as the browser UI: choose volumes, choose an output
+folder, press Segment, then a viewer and the results list.
 
-While a volume runs, the right-hand pane shows the slices as they come out. Finished volumes can
-be opened in a projection viewer (Visualise -- other volumes keep running meanwhile) and have
-their noise cleaned up (Clean up).
+All the logic (running, loading earlier results, projections, clean-up with Keep/Undo) lives in
+app.core.session.Session, shared with the browser UI; this file only draws it and forwards clicks.
 """
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QSettings, Qt, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QFont, QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QProgressBar, QPushButton, QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
+    QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
-from .core.engine import RootsegEngine
-from .core.jobs import JobRunner
-from .core.live import render_live_frame
-from .core.postprocess import CLEAN_SUFFIX, clean_path_for, CLEAN_MIN_SIZE, clean_prediction
-from .core.projection import AXES, Projections
-from .core.volumes import discover_volumes
-
-STATUS_ICON = {"queued": "⏸", "running": "▶", "done": "✅", "failed": "❌", "cancelled": "⛔"}
+from .core.engine import expected_output
+from .core.postprocess import clean_path_for
+from .core.session import Session
 
 STYLESHEET = """
-QMainWindow, QWidget {
-    background-color: #F5FAF6;
-    color: #2E3B33;
-    font-size: 13px;
-}
-QLabel#Heading {
-    font-size: 20px;
-    font-weight: 600;
-    color: #2E6B45;
-    padding: 4px 0 8px 0;
-}
-QLabel {
-    color: #2E3B33;
-}
-QComboBox, QLineEdit {
-    background: white;
-    border: 1px solid #BFE0CC;
-    border-radius: 6px;
-    padding: 6px 8px;
-    min-height: 22px;
-}
-QComboBox:hover, QLineEdit:hover {
-    border: 1px solid #4C9A6A;
-}
-QListWidget {
-    background: white;
-    border: 1px solid #BFE0CC;
-    border-radius: 8px;
-    padding: 4px;
-}
-QListWidget::item {
-    padding: 6px 4px;
-    border-radius: 4px;
-}
-QListWidget::item:selected {
-    background: #DCF0E2;
-    color: #2E3B33;
-}
-QPushButton {
-    background: white;
-    border: 1px solid #BFE0CC;
-    border-radius: 8px;
-    padding: 8px 16px;
-    color: #2E6B45;
-    font-weight: 500;
-}
-QPushButton:hover {
-    background: #EAF6EE;
-}
-QPushButton:disabled {
-    color: #A9B7AE;
-    border-color: #DDE8E0;
-    background: #F5FAF6;
-}
-QPushButton#Primary {
-    background: #4C9A6A;
-    border: 1px solid #3F8459;
-    color: white;
-    font-weight: 600;
-    padding: 10px 24px;
-}
-QPushButton#Primary:hover {
-    background: #439065;
-}
-QPushButton#Primary:disabled {
-    background: #BFE0CC;
-    border-color: #BFE0CC;
-    color: #F5FAF6;
-}
-QPushButton#Cancel {
-    background: white;
-    border: 1px solid #E0A2A2;
-    color: #B24444;
-}
-QPushButton#Cancel:hover {
-    background: #FBEAEA;
-}
-QLabel#Canvas {
-    background: #121512;
-    border-radius: 8px;
-    color: #8FA397;
-}
-QProgressBar {
-    border: 1px solid #BFE0CC;
-    border-radius: 8px;
-    background: white;
-    text-align: center;
-    min-height: 20px;
-}
-QProgressBar::chunk {
-    background-color: #4C9A6A;
-    border-radius: 7px;
-}
+QMainWindow, QWidget#Page, QScrollArea { background: #F6F6F4; }
+QWidget { color: #1D2421; font-size: 14px; }
+QFrame#Card { background: #FFFFFF; border: 1px solid #DCDFDB; border-radius: 8px; }
+QLabel#Title { font-size: 22px; font-weight: 600; }
+QLabel#Heading { font-size: 15px; font-weight: 600; }
+QLabel#Mute { color: #68726D; font-size: 13px; }
+QLabel#Error { color: #B3402F; font-size: 13px; }
+QLabel#Canvas { background: #101412; border-radius: 6px; color: #8FA397; }
+QLineEdit { background: #F6F6F4; border: 1px solid #DCDFDB; border-radius: 6px; padding: 7px 9px; }
+QLineEdit:focus { border: 1px solid #1F6F5C; }
+QPushButton { background: #FFFFFF; border: 1px solid #DCDFDB; border-radius: 6px; padding: 7px 16px; }
+QPushButton:hover { border: 1px solid #1F6F5C; }
+QPushButton:disabled { color: #A6ADA9; }
+QPushButton#Primary { background: #1F6F5C; border: 1px solid #1F6F5C; color: #FFFFFF; font-weight: 600; }
+QPushButton#Primary:disabled { background: #8DB5AA; border: 1px solid #8DB5AA; }
+QPushButton#Link { border: none; background: transparent; color: #1F6F5C; text-decoration: underline; padding: 2px 4px; }
+QPushButton#Warn { border: none; background: transparent; color: #B3402F; text-decoration: underline; padding: 2px 4px; }
+QPushButton#Seg { border-radius: 0; padding: 6px 14px; }
+QPushButton#Seg:checked { background: #1F6F5C; border: 1px solid #1F6F5C; color: #FFFFFF; }
+QProgressBar { background: #DCDFDB; border: none; border-radius: 3px; max-height: 6px; min-height: 6px; }
+QProgressBar::chunk { background: #1F6F5C; border-radius: 3px; }
+QSlider::groove:horizontal { height: 4px; background: #DCDFDB; border-radius: 2px; }
+QSlider::handle:horizontal { background: #1F6F5C; width: 14px; margin: -6px 0; border-radius: 7px; }
 """
 
-
-class DropListWidget(QListWidget):
-    """A QListWidget that accepts dragged-in files and folders as new queue entries."""
-
-    pathsDropped = pyqtSignal(list)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-
-    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dragMoveEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event: QDropEvent) -> None:
-        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
-        if paths:
-            self.pathsDropped.emit(paths)
-        event.acceptProposedAction()
-
-
-class Worker(QThread):
-    job_status = pyqtSignal(object)
-    progress = pyqtSignal(object, object)  # volume Path, fraction (float or None)
-    finished_ok = pyqtSignal(list)
-    finished_error = pyqtSignal(str)
-    live = pyqtSignal(object)  # LiveInfo, after every slice (the GUI throttles redraws)
-
-    def __init__(self, engine, out_dir, volumes):
-        super().__init__()
-        self.runner = JobRunner(engine, out_dir)
-        self.volumes = volumes
-
-    def cancel(self):
-        self.runner.cancel()
-
-    def run(self):
-        try:
-            results = self.runner.run_all(
-                self.volumes,
-                on_job_status=self.job_status.emit,
-                on_progress=self.progress.emit,
-                on_slice=self.live.emit,
-            )
-            self.finished_ok.emit(results)
-        except Exception as exc:  # model load failure etc.
-            self.finished_error.emit(str(exc))
+PROJECTION_VIEWS = [("side", "Side"), ("front", "Front"), ("top", "Top-down")]
 
 
 def to_pixmap(rgb: np.ndarray) -> QPixmap:
@@ -186,19 +58,19 @@ def to_pixmap(rgb: np.ndarray) -> QPixmap:
 class Canvas(QLabel):
     """Shows a pixmap scaled to fit, keeping its aspect ratio."""
 
-    def __init__(self, placeholder=""):
-        super().__init__(placeholder)
+    def __init__(self):
+        super().__init__()
         self.setObjectName("Canvas")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(280, 280)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.setMinimumSize(320, 320)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._pix = None
 
     def set_image(self, rgb: np.ndarray) -> None:
         self._pix = to_pixmap(rgb)
         self._rescale()
 
-    def clear_image(self, text: str) -> None:
+    def set_text(self, text: str) -> None:
         self._pix = None
         self.setPixmap(QPixmap())
         self.setText(text)
@@ -213,552 +85,629 @@ class Canvas(QLabel):
                                             Qt.TransformationMode.SmoothTransformation))
 
 
-class CallWorker(QThread):
-    """Runs fn(progress_cb, cancel_cb) off the GUI thread."""
-    progress = pyqtSignal(str, object)
-    done = pyqtSignal(object)
-    failed = pyqtSignal(str)
-
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
-        self._cancel = False
-
-    def cancel(self):
-        self._cancel = True
-
-    def run(self):
-        try:
-            self.done.emit(self.fn(lambda m, f=None: self.progress.emit(m, f), lambda: self._cancel))
-        except Exception as exc:
-            self.failed.emit("cancelled" if str(exc) == "cancelled" else str(exc))
+def card(title: str = None, number: int = None):
+    frame = QFrame()
+    frame.setObjectName("Card")
+    lay = QVBoxLayout(frame)
+    lay.setContentsMargins(20, 16, 20, 16)
+    lay.setSpacing(10)
+    if title:
+        head = QLabel((f"{number}   " if number else "") + title)
+        head.setObjectName("Heading")
+        lay.addWidget(head)
+    return frame, lay
 
 
-def _split_result_path(path: Path):
-    """(raw prediction path or None, cleaned mask path or None) for either file of a pair."""
-    if path.name.endswith(CLEAN_SUFFIX):
-        raw = path.with_name(path.name[:-len(CLEAN_SUFFIX)] + ".npy")
-        return (raw if raw.is_file() else None), path
-    clean = clean_path_for(path)
-    return path, (clean if clean.is_file() else None)
+def mute(text="") -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("Mute")
+    label.setWordWrap(True)
+    return label
 
 
-class VisualiserWindow(QWidget):
-    """Max-intensity projection of a finished prediction (and its cleaned mask, once one exists).
-    Independent of the main window, so other volumes keep running while it is open."""
-
-    def __init__(self, path: Path, parent=None):
-        super().__init__(parent, Qt.WindowType.Window)
-        self.path = Path(path)
-        self.setWindowTitle(f"Visualise - {self.path.name}")
-        self.resize(820, 760)
-        self.projections = {}  # source key -> Projections
-        self.worker = None
-
-        layout = QVBoxLayout(self)
-        controls = QHBoxLayout()
-        self.source_combo = QComboBox()
-        self.axis_combo = QComboBox()
-        for key, (_ax, label) in AXES.items():
-            self.axis_combo.addItem(label, userData=key)
-        self.depth_check = QCheckBox("Colour by depth")
-        self.thr_label = QLabel()
-        self.thr_slider = QSlider(Qt.Orientation.Horizontal)
-        self.thr_slider.setRange(1, 99)
-        self.thr_slider.setValue(50)
-        save_btn = QPushButton("Save PNG...")
-        save_btn.clicked.connect(self._save_png)
-        controls.addWidget(self.source_combo)
-        controls.addWidget(self.axis_combo)
-        controls.addWidget(self.depth_check)
-        controls.addWidget(self.thr_label)
-        controls.addWidget(self.thr_slider, stretch=1)
-        controls.addWidget(save_btn)
-        layout.addLayout(controls)
-
-        self.canvas = Canvas("loading...")
-        layout.addWidget(self.canvas, stretch=1)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        layout.addWidget(self.progress)
-
-        self._img = None
-        self._refreshing = False
-        self.refresh_sources()
-        for sig in (self.source_combo.currentIndexChanged, self.axis_combo.currentIndexChanged,
-                    self.depth_check.toggled, self.thr_slider.valueChanged):
-            sig.connect(self._on_control)
-        self._on_control()
-
-    def refresh_sources(self):
-        raw, clean = _split_result_path(self.path)
-        want = [("raw", "Raw prediction", raw), ("clean", "Cleaned mask", clean)]
-        have = [(k, l, p) for k, l, p in want if p is not None]
-        current = self.source_combo.currentData()
-        self._refreshing = True
-        self.source_combo.clear()
-        self.paths = {}
-        for k, label, p in have:
-            self.source_combo.addItem(label, userData=k)
-            self.paths[k] = p
-        i = self.source_combo.findData(current)
-        self.source_combo.setCurrentIndex(max(i, 0) if current else (0 if raw else 0))
-        self._refreshing = False
-
-    def event(self, e):
-        if e.type() == QEvent.Type.WindowActivate and not self._refreshing:
-            n = self.source_combo.count()
-            self.refresh_sources()
-            if self.source_combo.count() != n:
-                self._on_control()
-        return super().event(e)
-
-    def _on_control(self, *_):
-        if self._refreshing or self.source_combo.currentData() is None:
-            return
-        key = self.source_combo.currentData()
-        self.thr_slider.setEnabled(key == "raw")
-        self.thr_label.setText(f"threshold {self.thr_slider.value() / 100:.2f}" if key == "raw" else "binary")
-        if key in self.projections:
-            self._redraw()
-        elif self.worker is None:
-            self._load(key)
-
-    def _load(self, key):
-        path = self.paths[key]
-        self.canvas.clear_image("computing projection (first open only)...")
-        self.worker = CallWorker(lambda pcb, ccb: Projections.compute(path, pcb, ccb))
-        self.worker.progress.connect(lambda m, f: f is not None and self.progress.setValue(int(f * 100)))
-        self.worker.done.connect(lambda proj, k=key: self._loaded(k, proj))
-        self.worker.failed.connect(self._failed)
-        self.worker.start()
-
-    def _loaded(self, key, proj):
-        self.projections[key] = proj
-        self.worker = None
-        self.progress.setValue(100)
-        self._on_control()
-
-    def _failed(self, msg):
-        self.worker = None
-        self.canvas.clear_image(f"couldn't load: {msg}")
-
-    def _redraw(self):
-        key = self.source_combo.currentData()
-        proj = self.projections.get(key)
-        if proj is None:
-            return
-        thr = self.thr_slider.value() / 100 if key == "raw" else 0.5
-        self._img = proj.render(self.axis_combo.currentData(), thr, self.depth_check.isChecked())
-        self.canvas.set_image(self._img)
-
-    def _save_png(self):
-        if self._img is None:
-            return
-        from PIL import Image
-        fn, _ = QFileDialog.getSaveFileName(self, "Save projection", f"{self.path.stem}_projection.png", "PNG (*.png)")
-        if fn:
-            Image.fromarray(self._img).save(fn)
-
-    def closeEvent(self, event):
-        if self.worker is not None:
-            self.worker.cancel()
-            self.worker.wait(2000)
-        super().closeEvent(event)
-
-
-class CleanupDialog(QDialog):
-    """Threshold + remove small 3D components. Non-modal and runs in a thread, so it can run
-    alongside a model job."""
-    cleaned = pyqtSignal(str)
-
-    def __init__(self, pred_path: Path, parent=None):
-        super().__init__(parent)
-        self.pred_path = Path(pred_path)
-        self.setWindowTitle(f"Clean up - {self.pred_path.name}")
-        self.setMinimumWidth(460)
-        self.worker = None
-
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-        self.thr = QDoubleSpinBox()
-        self.thr.setRange(0.05, 0.99)
-        self.thr.setSingleStep(0.05)
-        self.thr.setValue(0.5)
-        self.min_size = QSpinBox()
-        self.min_size.setRange(1, 10_000_000)
-        self.min_size.setValue(CLEAN_MIN_SIZE)
-        self.min_size.setSuffix(" voxels")
-        form.addRow("Probability threshold:", self.thr)
-        form.addRow("Remove pieces smaller than:", self.min_size)
-        layout.addLayout(form)
-        layout.addWidget(QLabel("Keeps a root piece only if it is at least this big in 3D (26-connected).\n"
-                                "The raw prediction is left untouched; the result is saved next to it."))
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 100)
-        layout.addWidget(self.bar)
-        row = QHBoxLayout()
-        self.run_btn = QPushButton("Clean up")
-        self.run_btn.setObjectName("Primary")
-        self.run_btn.clicked.connect(self._run)
-        self.vis_btn = QPushButton("Visualise result")
-        self.vis_btn.setEnabled(False)
-        row.addWidget(self.run_btn)
-        row.addWidget(self.vis_btn)
-        row.addStretch(1)
-        layout.addLayout(row)
-
-    def _run(self):
-        thr, min_size = self.thr.value(), self.min_size.value()
-        self.run_btn.setEnabled(False)
-        self.status.setText("working...")
-        self.worker = CallWorker(lambda pcb, ccb: clean_prediction(
-            self.pred_path, threshold=thr, min_size=min_size, progress_cb=pcb, cancel_cb=ccb))
-        self.worker.progress.connect(lambda m, f: (self.status.setText(m), f is not None and self.bar.setValue(int(f * 100))))
-        self.worker.done.connect(self._done)
-        self.worker.failed.connect(lambda m: (self.status.setText(f"failed: {m}"), self.run_btn.setEnabled(True)))
-        self.worker.start()
-
-    def _done(self, r):
-        self.bar.setValue(100)
-        self.run_btn.setEnabled(True)
-        self.status.setText(
-            f"Kept {r['components_kept']:,} of {r['components_total']:,} pieces "
-            f"({r['voxels_after']:,} of {r['voxels_before']:,} voxels).\nSaved: {r['output']}")
-        self.vis_btn.setEnabled(True)
-        self.cleaned.emit(r["output"])
-
-    def closeEvent(self, event):
-        if self.worker is not None and self.worker.isRunning():
-            self.worker.cancel()
-            self.worker.wait(5000)
-        super().closeEvent(event)
+def clear_layout(layout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        if item.widget():
+            item.widget().deleteLater()
+        elif item.layout():
+            clear_layout(item.layout())
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Root Annotator")
-        self.resize(1180, 640)
+        self.setAcceptDrops(True)
+        self.resize(860, 920)
+        self.session = Session()
+        self.settings = QSettings("RootAnnotator", "RootAnnotator")
+        self.pool = ThreadPoolExecutor(max_workers=1)  # renders frames / projections off the UI thread
 
-        self.worker = None
-        self.items_by_path = {}
-        self.outputs = {}      # volume Path -> finished prediction Path
-        self.child_windows = []  # keep visualiser / clean-up windows alive
-        self.live_info = None
-        self.live_dirty = False
+        def as_list(key):  # QSettings hands back a str for one item, None for none
+            v = self.settings.value(key, [])
+            return [v] if isinstance(v, str) and v else list(v or [])
 
-        root = QWidget()
-        self.setCentralWidget(root)
-        columns = QHBoxLayout(root)
-        columns.setContentsMargins(20, 16, 20, 20)
-        columns.setSpacing(20)
-        left = QWidget()
-        left.setMaximumWidth(520)
-        layout = QVBoxLayout(left)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-        columns.addWidget(left, stretch=0)
-        self.live_pane = QWidget()
-        self.live_pane.setLayout(self._build_live_pane())
-        self.live_pane.hide()  # appears once a run produces its first slice
-        columns.addWidget(self.live_pane, stretch=1)
+        self.chosen = as_list("chosen")
+        self.chosen_dirs = set(as_list("chosen_dirs"))
+        self.out_auto = self.settings.value("out_auto", "true") != "false"
+        self.kept = set(as_list("kept"))
+        self.volumes = []          # [{path, name, done}] from Session.check
+        self.snap = {"running": False, "jobs": [], "progress": 0.0}
+        self.was_running = False
+        self.check_error = ""
+        self.run_error = ""
 
-        heading = QLabel("Root Annotator")
-        heading.setObjectName("Heading")
-        layout.addWidget(heading)
+        # viewer state (mirrors the web page)
+        self.current = None
+        self.auto_follow = True
+        self.mode = "projection"
+        self.pview = "side"
+        self.info = None
+        self.fresh = True
+        self.prev_running = False
+        self.prev_cleaning = False
+        self.shown_key = None
+        self.pending = None        # (key, future)
+        self.want_key = None
+        self.actions_sig = None
+        self.rows_sig = None
 
-        # -- queue --
-        layout.addWidget(QLabel("Volumes (drag files or a folder here, or type a path):"))
-        path_row = QHBoxLayout()
-        self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("type or paste a file/folder path, then press Enter")
-        self.path_edit.returnPressed.connect(self._add_typed_path)
-        add_path_btn = QPushButton("Add")
-        add_path_btn.clicked.connect(self._add_typed_path)
-        path_row.addWidget(self.path_edit, stretch=1)
-        path_row.addWidget(add_path_btn)
-        layout.addLayout(path_row)
-        self.queue_list = DropListWidget()
-        self.queue_list.pathsDropped.connect(self._add_paths)
-        self.queue_list.itemSelectionChanged.connect(self._update_result_buttons)
-        layout.addWidget(self.queue_list, stretch=1)
+        self._build()
+        if not self.out_auto:
+            self.out_edit.setText(str(self.settings.value("out", "") or ""))
+        self._changed(save=False)
 
-        queue_btn_row = QHBoxLayout()
-        add_files_btn = QPushButton("Choose Files...")
-        add_files_btn.clicked.connect(self._add_files_dialog)
-        add_folder_btn = QPushButton("Choose Folder...")
-        add_folder_btn.clicked.connect(self._add_folder_dialog)
-        remove_btn = QPushButton("Remove")
-        remove_btn.clicked.connect(self._remove_selected)
-        clear_btn = QPushButton("Clear All")
-        clear_btn.clicked.connect(self._clear_queue)
-        for b in (add_files_btn, add_folder_btn, remove_btn, clear_btn):
-            queue_btn_row.addWidget(b)
-        layout.addLayout(queue_btn_row)
+        self.timer = QTimer(self)
+        self.timer.setInterval(500)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start()
 
-        # -- output dir --
-        out_row = QHBoxLayout()
-        out_row.addWidget(QLabel("Save results to:"))
-        self.out_dir_edit = QLineEdit()
-        self.out_dir_edit.setPlaceholderText("choose a folder for the results...")
-        out_row.addWidget(self.out_dir_edit, stretch=1)
-        out_browse_btn = QPushButton("Browse...")
-        out_browse_btn.clicked.connect(self._browse_out_dir)
-        out_row.addWidget(out_browse_btn)
-        layout.addLayout(out_row)
+    # ------------------------------------------------------------------ layout
 
-        # -- run controls --
-        run_row = QHBoxLayout()
-        self.run_btn = QPushButton("Start")
-        self.run_btn.setObjectName("Primary")
-        self.run_btn.clicked.connect(self._run)
+    def _build(self) -> None:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page = QWidget()
+        page.setObjectName("Page")
+        outer = QHBoxLayout(page)
+        outer.setContentsMargins(24, 24, 24, 40)
+        column = QWidget()
+        column.setMaximumWidth(780)
+        col = QVBoxLayout(column)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(16)
+        outer.addStretch(1)
+        outer.addWidget(column, 100)
+        outer.addStretch(1)
+        scroll.setWidget(page)
+        self.setCentralWidget(scroll)
+
+        title = QLabel("Root Annotator")
+        title.setObjectName("Title")
+        col.addWidget(title)
+
+        # 1. volumes
+        c1, l1 = card("Choose volumes", 1)
+        self.chosen_box = QVBoxLayout()
+        self.chosen_box.setSpacing(2)
+        l1.addLayout(self.chosen_box)
+        row = QHBoxLayout()
+        add_files = QPushButton("Add volumes…")
+        add_files.clicked.connect(self._add_files)
+        add_folder = QPushButton("Add folder…")
+        add_folder.clicked.connect(self._add_folder)
+        row.addWidget(add_files)
+        row.addWidget(add_folder)
+        row.addWidget(mute("or drag files and folders onto this window"), 1)
+        l1.addLayout(row)
+        col.addWidget(c1)
+
+        # 2. output + segment
+        c2, l2 = card("Choose where to save results", 2)
+        row = QHBoxLayout()
+        self.out_edit = QLineEdit()
+        self.out_edit.setPlaceholderText("Output folder")
+        self.out_edit.textEdited.connect(self._out_edited)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse_out)
+        row.addWidget(self.out_edit, 1)
+        row.addWidget(browse)
+        l2.addLayout(row)
+        row = QHBoxLayout()
+        self.start_btn = QPushButton("Segment")
+        self.start_btn.setObjectName("Primary")
+        self.start_btn.clicked.connect(self._start)
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setObjectName("Cancel")
-        self.cancel_btn.clicked.connect(self._cancel)
-        self.cancel_btn.setEnabled(False)
-        run_row.addWidget(self.run_btn)
-        run_row.addWidget(self.cancel_btn)
-        run_row.addStretch(1)
-        layout.addLayout(run_row)
+        self.cancel_btn.clicked.connect(self.session.cancel)
+        self.cancel_btn.hide()
+        self.hint = mute()
+        row.addWidget(self.start_btn)
+        row.addWidget(self.cancel_btn)
+        row.addWidget(self.hint, 1)
+        l2.addLayout(row)
+        self.run_bar = QProgressBar()
+        self.run_bar.setRange(0, 1000)
+        self.run_bar.setTextVisible(False)
+        self.run_bar.hide()
+        l2.addWidget(self.run_bar)
+        self.run_text = mute()
+        l2.addWidget(self.run_text)
+        col.addWidget(c2)
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        layout.addWidget(self.progress_bar)
+        # viewer
+        self.viewer_card, lv = card()
+        self.viewer_title = QLabel("")
+        self.viewer_title.setObjectName("Heading")
+        lv.addWidget(self.viewer_title)
+        controls = QHBoxLayout()
+        self.mode_btns = {}
+        self.mode_box = QWidget()
+        mb = QHBoxLayout(self.mode_box)
+        mb.setContentsMargins(0, 0, 0, 0)
+        mb.setSpacing(0)
+        for key, label in (("projection", "Projection"), ("slices", "Slices")):
+            b = QPushButton(label)
+            b.setObjectName("Seg")
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, k=key: self._set_mode(k))
+            self.mode_btns[key] = b
+            mb.addWidget(b)
+        self.view_btns = {}
+        self.view_box = QWidget()
+        vb = QHBoxLayout(self.view_box)
+        vb.setContentsMargins(0, 0, 0, 0)
+        vb.setSpacing(0)
+        for key, label in PROJECTION_VIEWS:
+            b = QPushButton(label)
+            b.setObjectName("Seg")
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, k=key: self._set_view(k))
+            self.view_btns[key] = b
+            vb.addWidget(b)
+        controls.addWidget(self.mode_box)
+        controls.addSpacing(10)
+        controls.addWidget(self.view_box)
+        controls.addStretch(1)
+        lv.addLayout(controls)
+        self.canvas = Canvas()
+        lv.addWidget(self.canvas)
+        self.slider_row = QWidget()
+        sr = QHBoxLayout(self.slider_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(1, 1)
+        self.slider.valueChanged.connect(lambda _=0: self._request_image())
+        self.slice_label = mute()
+        sr.addWidget(self.slider, 1)
+        sr.addWidget(self.slice_label)
+        lv.addWidget(self.slider_row)
+        self.actions = QVBoxLayout()
+        lv.addLayout(self.actions)
+        self.viewer_card.hide()
+        col.addWidget(self.viewer_card)
 
-        # -- results of finished volumes --
-        result_row = QHBoxLayout()
-        self.vis_btn = QPushButton("Visualise")
-        self.vis_btn.clicked.connect(self._visualise)
-        self.clean_btn = QPushButton("Clean up")
-        self.clean_btn.clicked.connect(self._clean_up)
-        open_btn = QPushButton("Open result...")
-        open_btn.clicked.connect(self._open_result)
-        for b in (self.vis_btn, self.clean_btn, open_btn):
-            result_row.addWidget(b)
-        layout.addLayout(result_row)
-        self._update_result_buttons()
+        # 3. results
+        self.results_card, l3 = card("Results", 3)
+        self.results_box = QVBoxLayout()
+        self.results_box.setSpacing(4)
+        l3.addLayout(self.results_box)
+        self.results_card.hide()
+        col.addWidget(self.results_card)
+        col.addStretch(1)
 
-        self.live_timer = QTimer(self)
-        self.live_timer.setInterval(300)
-        self.live_timer.timeout.connect(self._tick_live)
-        self.live_timer.start()
+    # ------------------------------------------------------------------ volumes / output
 
-    # -- live view --
+    def _save(self) -> None:
+        self.settings.setValue("chosen", self.chosen)
+        self.settings.setValue("chosen_dirs", sorted(self.chosen_dirs))
+        self.settings.setValue("out_auto", "true" if self.out_auto else "false")
+        self.settings.setValue("out", self.out_edit.text())
+        self.settings.setValue("kept", sorted(self.kept))
 
-    def _build_live_pane(self):
-        pane = QVBoxLayout()
-        self.live_title = QLabel("Live view")
-        self.live_title.setObjectName("Heading")
-        pane.addWidget(self.live_title)
-        self.live_canvas = Canvas("Start a run to watch slices come out here.")
-        pane.addWidget(self.live_canvas, stretch=1)
-        self.live_label = QLabel("")
-        pane.addWidget(self.live_label)
-        return pane
+    def _add(self, path: str, is_dir: bool) -> None:
+        if path not in self.chosen:
+            self.chosen.append(path)
+        if is_dir:
+            self.chosen_dirs.add(path)
+        self._changed()
 
-    def _on_live(self, info):
-        self.live_info = info
-        self.live_dirty = True
+    def _add_files(self) -> None:
+        files, _ = QFileDialog.getOpenFileNames(self, "Choose volumes", self.settings.value("last_dir", ""),
+                                                "NumPy volumes (*.npy)")
+        for f in files:
+            self.settings.setValue("last_dir", str(Path(f).parent))
+            self._add(f, False)
 
-    def _tick_live(self):
-        if self.live_info is None or not self.live_dirty:
+    def _add_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Choose a folder of volumes or a scan folder",
+                                             self.settings.value("last_dir", ""))
+        if d:
+            self.settings.setValue("last_dir", str(Path(d).parent))
+            self._add(d, True)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        for url in event.mimeData().urls():
+            p = Path(url.toLocalFile())
+            if p.is_dir() or p.suffix.lower() == ".npy":
+                self._add(str(p), p.is_dir())
+
+    def _remove(self, path: str) -> None:
+        self.chosen = [p for p in self.chosen if p != path]
+        self.chosen_dirs.discard(path)
+        self._changed()
+
+    def _render_chosen(self) -> None:
+        clear_layout(self.chosen_box)
+        for p in self.chosen:
+            row = QHBoxLayout()
+            label = QLabel(p)
+            label.setWordWrap(True)
+            rm = QPushButton("Remove")
+            rm.setObjectName("Warn")
+            rm.clicked.connect(lambda _=False, q=p: self._remove(q))
+            row.addWidget(label, 1)
+            row.addWidget(rm)
+            self.chosen_box.addLayout(row)
+
+    def _auto_out(self) -> None:
+        """Until the user picks their own, the output folder is `annotations` next to the first
+        volume (so earlier results are found again), or the default folder when nothing is chosen."""
+        if not self.out_auto:
+            if not self.out_edit.text():
+                self.out_edit.setText(self.session.default_out)
             return
-        self.live_dirty = False
-        self.live_pane.show()
-        self._draw_live()
+        p = self.chosen[0] if self.chosen else None
+        if p:
+            base = Path(p) if p in self.chosen_dirs else Path(p).parent
+            self.out_edit.setText(str(base / "annotations"))
+        else:
+            self.out_edit.setText(self.session.default_out)
 
-    def _draw_live(self):
-        info = self.live_info
-        if info is None:
-            return
-        z = info.done  # always follow the latest predicted slice
+    def _out_edited(self, _text: str) -> None:
+        self.out_auto = False
+        self._save()
+        self._refresh()
+
+    def _browse_out(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Choose where to save results", self.out_edit.text())
+        if d:
+            self.out_edit.setText(d)
+            self.out_auto = False
+            self._save()
+            self._refresh()
+
+    def _changed(self, save=True) -> None:
+        self._auto_out()
+        self._render_chosen()
+        if save:
+            self._save()
+        self._refresh()
+
+    def _out_dir(self) -> Path:
+        return Path(self.out_edit.text().strip()).expanduser()
+
+    def _refresh(self) -> None:
+        """Re-reads which chosen volumes already have a result in the output folder."""
+        if not self.chosen or not self.out_edit.text().strip():
+            self.volumes, self.check_error = [], ""
+        else:
+            try:
+                self.volumes = self.session.check([Path(p).expanduser() for p in self.chosen], self._out_dir())
+                self.check_error = ""
+            except Exception as exc:
+                self.volumes, self.check_error = [], str(exc)
+        self.rows_sig = None
+        self._render_all()
+
+    # ------------------------------------------------------------------ running
+
+    def _start(self, redo=()) -> None:
+        self.run_error = ""
         try:
-            self.live_canvas.set_image(render_live_frame(info.input_path, info.pred_path, z))
-        except (OSError, ValueError):
-            return  # file just renamed/removed as the job finished
-        self.live_label.setText(f"slice {z} of {info.shape[0] - 1}")
+            self.session.start_run([Path(p).expanduser() for p in self.chosen], self._out_dir(), list(redo))
+            self.auto_follow = True
+        except Exception as exc:
+            self.run_error = str(exc)
+        self._tick()
 
-    # -- finished-volume actions --
+    def _redo(self, path: str) -> None:
+        if QMessageBox.question(self, "Segment again?", "The current result will be replaced.") \
+                == QMessageBox.StandardButton.Yes:
+            self._start(redo=[path])
 
-    def _selected_output(self):
-        for item in self.queue_list.selectedItems():
-            for v, it in self.items_by_path.items():
-                if it is item and v in self.outputs:
-                    return self.outputs[v]
-        return None
+    def _status(self, v: dict) -> dict:
+        j = next((j for j in self.snap["jobs"] if j["path"] == v["path"]), None)
+        if j and j["state"] == "running":
+            return {"text": f"Segmenting… {round(self.snap['progress'] * 100)}%", "view": True}
+        if j and j["state"] == "queued":
+            return {"text": "Waiting"}
+        if j and j["state"] == "failed":
+            return {"text": "Failed: " + j["message"], "err": True}
+        if j and j["state"] == "cancelled" and not v["done"]:
+            return {"text": "Cancelled"}
+        if v["done"]:
+            return {"text": "Segmented", "view": True, "redo": not self.snap["running"]}
+        return {"text": "Not segmented yet"}
 
-    def _update_result_buttons(self):
-        has = self._selected_output() is not None
-        self.vis_btn.setEnabled(has)
-        self.clean_btn.setEnabled(has)
+    def _render_all(self) -> None:
+        pending = sum(1 for v in self.volumes if not v["done"])
+        running = self.snap["running"]
+        self.start_btn.setEnabled(not running and pending > 0)
+        self.cancel_btn.setVisible(running)
+        if self.run_error:
+            self.hint.setText(self.run_error)
+        elif running:
+            self.hint.setText("A run is in progress.")
+        elif not self.chosen:
+            self.hint.setText("Add at least one volume first.")
+        elif not self.out_edit.text().strip():
+            self.hint.setText("Choose an output folder.")
+        elif self.check_error:
+            self.hint.setText("Could not read the chosen volumes: " + self.check_error)
+        elif not self.volumes:
+            self.hint.setText("No volumes found in what you chose.")
+        elif pending:
+            done = len(self.volumes) - pending
+            self.hint.setText(f"{pending} to segment" + (f", {done} already done" if done else ""))
+        else:
+            self.hint.setText("Everything chosen is already segmented. Use Redo in Results to run one again.")
 
-    def _track(self, window):
-        self.child_windows.append(window)
-        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        window.destroyed.connect(lambda _=None, w=window: self.child_windows.remove(w) if w in self.child_windows else None)
-        window.show()
-
-    def _visualise(self, *, path=None):
-        path = path or self._selected_output()
-        if path is not None:
-            self._track(VisualiserWindow(Path(path)))
-
-    def _clean_up(self, *, path=None):
-        path = path or self._selected_output()
-        if path is None:
+        self.results_card.setVisible(bool(self.volumes))
+        sig = [(v["path"], v["done"], tuple(self._status(v).items())) for v in self.volumes]
+        if sig == self.rows_sig:
             return
-        dlg = CleanupDialog(Path(path))
-        dlg.vis_btn.clicked.connect(lambda: self._visualise(path=path))
-        self._track(dlg)
+        self.rows_sig = sig
+        clear_layout(self.results_box)
+        for v in self.volumes:
+            st = self._status(v)
+            row = QHBoxLayout()
+            name = QLabel(v["name"])
+            name.setWordWrap(True)
+            status = mute(st["text"])
+            if st.get("err"):
+                status.setObjectName("Error")
+            row.addWidget(name, 2)
+            row.addWidget(status, 2)
+            if st.get("view"):
+                b = QPushButton("View")
+                b.clicked.connect(lambda _=False, p=v["path"]: self._view(p))
+                row.addWidget(b)
+            if st.get("redo"):
+                b = QPushButton("Redo")
+                b.setObjectName("Link")
+                b.clicked.connect(lambda _=False, p=v["path"]: self._redo(p))
+                row.addWidget(b)
+            self.results_box.addLayout(row)
 
-    def _open_result(self):
-        fn, _ = QFileDialog.getOpenFileName(self, "Open a prediction (.npy)", "", "NumPy volumes (*.npy)")
-        if not fn:
+    # ------------------------------------------------------------------ viewer
+
+    def _view(self, path: str) -> None:
+        self.current, self.auto_follow, self.mode = path, False, "projection"
+        self._reset_view()
+
+    def _reset_view(self) -> None:
+        self.info, self.shown_key, self.fresh = None, None, True
+        self.canvas.set_text("")
+        self.actions_sig = None
+
+    def _set_mode(self, mode: str) -> None:
+        self.mode, self.shown_key = mode, None
+        self._sync_view_controls()
+        self._request_image()
+
+    def _set_view(self, view: str) -> None:
+        self.pview, self.shown_key = view, None
+        self._sync_view_controls()
+        self._request_image()
+
+    def _sync_view_controls(self) -> None:
+        for k, b in self.mode_btns.items():
+            b.setChecked(k == self.mode)
+        for k, b in self.view_btns.items():
+            b.setChecked(k == self.pview)
+        self.view_box.setVisible(self.mode == "projection")
+        self.slider_row.setVisible(self.mode == "slices")
+
+    def _diff_on(self) -> bool:
+        return bool(self.info and self.info.get("cleaned") and self.current not in self.kept)
+
+    def _viewer_tick(self) -> None:
+        if not self.current:
+            self.viewer_card.hide()
             return
-        box = QMessageBox(self)
-        box.setWindowTitle("Open result")
-        box.setText(Path(fn).name)
-        vis = box.addButton("Visualise", QMessageBox.ButtonRole.AcceptRole)
-        clean = box.addButton("Clean up", QMessageBox.ButtonRole.ActionRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
-        if box.clickedButton() is vis:
-            self._visualise(path=Path(fn))
-        elif box.clickedButton() is clean:
-            self._clean_up(path=Path(fn))
-
-    # -- queue management --
-
-    def _add_paths(self, raw_paths):
+        self.viewer_card.show()
+        self.viewer_title.setText(Path(self.current).name)
         try:
-            volumes = discover_volumes(raw_paths)
-        except FileNotFoundError as exc:
-            QMessageBox.warning(self, "Hmm, that's not a volume", str(exc))
+            i = self.session.view_info(Path(self.current), self._out_dir())
+        except Exception:
             return
-        added = 0
-        for v in volumes:
-            if v in self.items_by_path:
-                continue
-            item = QListWidgetItem(f"{STATUS_ICON['queued']}  {v}")
-            self.queue_list.addItem(item)
-            self.items_by_path[v] = item
-            added += 1
-        if added and not self.out_dir_edit.text().strip():
-            default_out = volumes[0].parent / "annotations"
-            self.out_dir_edit.setText(str(default_out))
-
-    def _add_typed_path(self):
-        text = self.path_edit.text().strip().strip("\"'")
-        if text:
-            self._add_paths([str(Path(text).expanduser())])
-            self.path_edit.clear()
-
-    def _add_files_dialog(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Choose volumes", "", "NumPy volumes (*.npy)")
-        if files:
-            self._add_paths(files)
-
-    def _add_folder_dialog(self):
-        folder = QFileDialog.getExistingDirectory(self, "Choose a scan folder or a folder of volumes/scans")
-        if folder:
-            self._add_paths([folder])
-
-    def _remove_selected(self):
-        for item in self.queue_list.selectedItems():
-            row = self.queue_list.row(item)
-            self.queue_list.takeItem(row)
-            self.items_by_path = {p: it for p, it in self.items_by_path.items() if it is not item}
-
-    def _clear_queue(self):
-        self.queue_list.clear()
-        self.items_by_path.clear()
-
-    def _browse_out_dir(self):
-        folder = QFileDialog.getExistingDirectory(self, "Choose where to save results")
-        if folder:
-            self.out_dir_edit.setText(folder)
-
-    # -- run --
-
-    def _set_item_status(self, path: Path, state: str, message: str = ""):
-        item = self.items_by_path.get(path)
-        if item is None:
+        if not i.get("available"):
+            self.canvas.set_text("No result yet.")
             return
-        suffix = f"  ({message})" if message else ""
-        item.setText(f"{STATUS_ICON.get(state, '?')}  {path}{suffix}")
+        self.info = i
+        ct = i.get("clean_task")
+        cleaning = bool(ct and ct["state"] == "running" and ct["kind"] == "clean")
+        if self.prev_running and not i["running"]:
+            self.mode = "projection"
+        if self.prev_cleaning and not cleaning:
+            self.mode = "projection"
+        self.prev_running, self.prev_cleaning = i["running"], cleaning
+        if i["running"]:
+            self.mode = "slices"
 
-    def _run(self):
-        if not self.items_by_path:
-            QMessageBox.information(self, "No volumes yet", "Add at least one .npy file, scan folder, or folder of either first.")
+        at_latest = self.slider.value() >= self.slider.maximum()
+        self.slider.blockSignals(True)
+        self.slider.setRange(1, max(1, i["done"]))
+        if self.fresh:
+            self.slider.setValue(i["done"] if i["running"] else max(1, round(i["done"] / 2)))
+            self.fresh = False
+        elif i["running"] and at_latest:
+            self.slider.setValue(i["done"])
+        if cleaning and ct["written"] > 0:
+            self.slider.setValue(min(self.slider.maximum(), max(1, ct["written"] - 1)))
+        self.slider.blockSignals(False)
+        self.mode_box.setVisible(not i["running"])
+        self._sync_view_controls()
+        self._request_image()
+        self._render_actions()
+
+    def _request_image(self) -> None:
+        i = self.info
+        if not i or not self.current:
             return
-        out_dir_text = self.out_dir_edit.text().strip()
-        if not out_dir_text:
-            QMessageBox.information(self, "Choose a save location", "Pick a folder to save results to first.")
+        out, vol = self._out_dir(), Path(self.current)
+        ct = i.get("clean_task")
+        written = ct["written"] if ct and ct["state"] == "running" else 0
+        diff = self._diff_on()
+        if self.mode == "projection":
+            key = ("p", self.current, self.pview, i["cleaned"], diff, written)
+            fn = lambda: self.session.projection_image(vol, out, self.pview, diff)  # noqa: E731
+        else:
+            z = min(self.slider.value(), i["done"])
+            key = ("s", self.current, z, i["cleaned"], diff, i["done"] if i["running"] else 0, written)
+            self.slice_label.setText(f"Slice {z}")
+            fn = lambda: (None, self.session.frame(vol, out, z, diff))  # noqa: E731
+        self.want_key = key
+        if key != self.shown_key and self.pending is None:
+            self.pending = (key, self.pool.submit(fn))
+
+    def _collect_image(self) -> None:
+        if self.pending is None or not self.pending[1].done():
             return
+        key, fut = self.pending
+        self.pending = None
+        try:
+            status, img = fut.result()
+        except Exception as exc:
+            self.canvas.set_text(str(exc))
+            return
+        if self.mode == "projection" and key[0] == "p" and img is None and status:
+            if status.get("state") == "failed":
+                self.canvas.set_text(status.get("message", "could not draw the projection"))
+            else:
+                self.canvas.set_text(f"Preparing the projection (first time only)… {round(status.get('progress', 0) * 100)}%")
+            self.shown_key = None  # try again next tick
+            return
+        if img is not None and key == self.want_key:
+            self.canvas.set_image(img)
+            self.shown_key = key
 
-        engine = RootsegEngine()
-        out_dir = Path(out_dir_text)
-        volumes = list(self.items_by_path.keys())
+    def _render_actions(self) -> None:
+        i = self.info
+        t = i.get("clean_task")
+        busy = bool(t and t["state"] == "running")
+        sig = (i["running"], i["cleaned"], t and t["state"], t and t["kind"], self.current in self.kept)
+        if busy and t["kind"] == "clean" and hasattr(self, "_clean_bar"):
+            pc = round(t["progress"] * 100)
+            self._clean_label.setText(f"Cleaning up… {pc}%")
+            self._clean_bar.setValue(pc)
+        if sig == self.actions_sig:
+            return
+        self.actions_sig = sig
+        clear_layout(self.actions)
+        self.__dict__.pop("_clean_bar", None)
 
-        for v in volumes:
-            self._set_item_status(v, "queued")
-        self.progress_bar.setValue(0)
+        def button(text, slot, name=None):
+            b = QPushButton(text)
+            if name:
+                b.setObjectName(name)
+            b.clicked.connect(lambda _=False: slot())
+            return b
 
-        self.worker = Worker(engine, out_dir, volumes)
-        self.worker.job_status.connect(self._on_job_status)
-        self.worker.progress.connect(self._on_progress)
-        self.worker.live.connect(self._on_live)
-        self.worker.finished_ok.connect(self._on_finished_ok)
-        self.worker.finished_error.connect(self._on_finished_error)
-        self.worker.start()
+        row = QHBoxLayout()
+        if i["running"]:
+            row.addWidget(mute("Segmenting… drag the slider to look back."), 1)
+        elif busy and t["kind"] == "clean":
+            box = QVBoxLayout()
+            self._clean_label = mute("Cleaning up… 0%")
+            self._clean_bar = QProgressBar()
+            self._clean_bar.setRange(0, 100)
+            self._clean_bar.setTextVisible(False)
+            box.addWidget(self._clean_label)
+            box.addWidget(self._clean_bar)
+            self.actions.addLayout(box)
+            return
+        elif busy:
+            row.addWidget(mute("Saving the cleaned result…"), 1)
+        elif i["cleaned"] and self.current not in self.kept:
+            label = QLabel('Clean-up applied. <span style="color:#d98a1d">Orange</span> shows what was removed. Keep it?')
+            row.addWidget(label, 1)
+            row.addWidget(button("Keep", self._keep, "Primary"))
+            row.addWidget(button("Undo", self._undo))
+        elif i["cleaned"]:
+            row.addWidget(mute("Cleaned result shown."), 1)
+            row.addWidget(button("Undo clean-up", self._undo, "Warn"))
+        else:
+            row.addWidget(button("Clean up", self._clean))
+            msg = mute("Removes small specks that are probably not roots.")
+            row.addWidget(msg, 1)
+            if t and t["state"] == "failed":
+                err = QLabel(t["message"])
+                err.setObjectName("Error")
+                row.addWidget(err)
+        self.actions.addLayout(row)
 
-        self.run_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(True)
+    def _pred(self) -> Path:
+        return expected_output(Path(self.current), self._out_dir())
 
-    def _cancel(self):
-        if self.worker:
-            self.worker.cancel()
-        self.cancel_btn.setEnabled(False)
+    def _clean(self) -> None:
+        try:
+            self.session.start_cleanup(self._pred())
+        except Exception as exc:
+            QMessageBox.warning(self, "Clean up", str(exc))
+        self.actions_sig = None
 
-    def _on_job_status(self, status):
-        self._set_item_status(status.volume, status.state, status.message)
-        if status.state == "running":
-            self.live_info = None
-            self.live_title.setText(f"Live view - {status.volume.name}")
-        elif status.state == "done" and status.outputs:
-            self.outputs[status.volume] = status.outputs[0]
-            if self.live_info is not None:  # partial file was renamed to the final one
-                self.live_info.pred_path = status.outputs[0]
-                self.live_dirty = True
-            self._update_result_buttons()
+    def _keep(self) -> None:
+        self.kept.add(self.current)
+        self._save()
+        try:
+            self.session.keep_cleanup(self._pred())
+        except Exception as exc:
+            QMessageBox.warning(self, "Keep", str(exc))
+        self.actions_sig, self.shown_key = None, None
 
-    def _on_progress(self, volume, frac):
-        if frac is not None:
-            self.progress_bar.setValue(int(frac * 100))
+    def _undo(self) -> None:
+        self.session.undo_cleanup(self._pred())
+        self.kept.discard(self.current)
+        self._save()
+        self.actions_sig, self.shown_key = None, None
 
-    def _finish_run(self):
-        self.run_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
-        self.worker = None
+    # ------------------------------------------------------------------ polling
 
-    def _on_finished_ok(self, results):
-        n_done = sum(1 for r in results if r.state == "done")
-        n_failed = sum(1 for r in results if r.state == "failed")
-        if n_failed:
-            QMessageBox.warning(
-                self, "Finished with some errors",
-                f"{n_done} of {len(results)} volumes finished. {n_failed} failed -- "
-                "check the list above for details.",
-            )
-        self._finish_run()
+    def _tick(self) -> None:
+        self.snap = self.session.snapshot()
+        jobs = self.snap["jobs"]
+        run = next((j for j in jobs if j["state"] == "running"), None)
+        n, done = len(jobs), sum(1 for j in jobs if j["state"] == "done")
+        self.run_bar.setVisible(self.snap["running"])
+        self.run_bar.setValue(round((done + self.snap["progress"]) / max(n, 1) * 1000))
+        if self.snap["running"] and run:
+            dev = self.snap.get("device")
+            self.run_text.setText(f"Segmenting {done + 1} of {n}: {run.get('name', '')}"
+                                  + (f" ({'GPU' if dev == 'cuda' else 'CPU'})" if dev else ""))
+        else:
+            self.run_text.setText("")
+        if self.snap["running"] and run and self.auto_follow and self.current != run["path"]:
+            self.current = run["path"]
+            self._reset_view()
+        if self.was_running and not self.snap["running"]:
+            self._refresh()
+        self.was_running = self.snap["running"]
+        self._render_all()
+        self._viewer_tick()
+        self._collect_image()
 
-    def _on_finished_error(self, message: str):
-        QMessageBox.critical(self, "Something went wrong", message)
-        self._finish_run()
+    def closeEvent(self, event) -> None:
+        self._save()
+        self.session.cancel()
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        super().closeEvent(event)
 
 
 def run_gui() -> int:

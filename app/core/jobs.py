@@ -2,6 +2,7 @@
 per-step progress through plain callbacks so both the GUI (Qt signals) and the CLI (print) can
 drive it the same way.
 """
+import shutil
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Callable, List, Optional
 from .engine_base import SliceCB
 from .sidecar import write_sidecar
 from .tiffstack import write_tiff_stack
-from .volumes import stack_scan_to_npy
+from .volumes import is_vol, stack_scan_to_npy, stack_vol_to_npy, volume_voxels
 
 
 @dataclass
@@ -32,6 +33,19 @@ class JobRunner:
 
     def _is_cancelled(self) -> bool:
         return self._cancelled
+
+    def _check_space(self, volume: Path, needs_stack: bool) -> None:
+        """Fails early, with a readable message, if the output drive cannot hold the temporary
+        uint8 copy (scans and .vol files) plus the float16 prediction."""
+        try:
+            need = volume_voxels(volume) * (3 if needs_stack else 2)
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            free = shutil.disk_usage(self.out_dir).free
+        except (OSError, ValueError):
+            return  # unreadable sizes are reported by the run itself
+        if need and free < need:
+            raise RuntimeError(f"Not enough free disk space in {self.out_dir}: about {need / 2**30:.0f} GB "
+                               f"needed, {free / 2**30:.0f} GB free. Choose another results folder.")
 
     def run_all(
         self,
@@ -69,11 +83,18 @@ class JobRunner:
                     if on_progress:
                         on_progress(_volume, frac)
 
+                needs_stack = volume.is_dir() or is_vol(volume)
+                self._check_space(volume, needs_stack)
                 run_path, stack_meta = volume, {}
                 if volume.is_dir():
                     # slice-folder scan: stack to a temporary .npy the engines can load
                     run_path = self.out_dir / "_stacked" / f"{volume.name}.npy"
                     stack_meta = {"stacked_from": stack_scan_to_npy(
+                        volume, run_path, progress_cb=progress_cb, cancel_cb=self._is_cancelled)}
+                elif is_vol(volume):
+                    # raw .vol reconstruction: convert to a temporary uint8 .npy
+                    run_path = self.out_dir / "_stacked" / f"{volume.stem}.npy"
+                    stack_meta = {"converted_from": stack_vol_to_npy(
                         volume, run_path, progress_cb=progress_cb, cancel_cb=self._is_cancelled)}
                 try:
                     result = self.engine.run(
@@ -81,7 +102,7 @@ class JobRunner:
                         slice_cb=on_slice,
                     )
                 finally:
-                    if volume.is_dir():
+                    if needs_stack:
                         try:
                             run_path.unlink(missing_ok=True)
                             run_path.parent.rmdir()

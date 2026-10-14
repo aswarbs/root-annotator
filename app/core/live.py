@@ -6,13 +6,15 @@ from pathlib import Path
 
 import numpy as np
 
+from .volumes import open_volume
+
 _MAX_SIDE = 1100
 
 
 def render_live_frame(input_path, pred_path: Path, z: int, removed_from: Path = None,
                       overlay: bool = True) -> np.ndarray:
     """`overlay=False` gives the plain CT slice (needs `input_path`), without the predicted roots."""
-    vol = np.load(str(input_path), mmap_mode="r") if input_path else None  # None: scan folder, input gone
+    vol = open_volume(input_path) if input_path else None  # None: scan folder, input gone
     pred = np.load(str(pred_path), mmap_mode="r")
     try:
         pr = np.array(pred[z], dtype=np.float32)

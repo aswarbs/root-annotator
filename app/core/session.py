@@ -20,7 +20,7 @@ from .volumes import discover_volumes
 
 def volume_path(raw: str) -> Path:
     p = Path(raw).expanduser()
-    if not (p.is_dir() or (p.is_file() and p.suffix == ".npy")):
+    if not (p.is_dir() or (p.is_file() and p.suffix.lower() in (".npy", ".vol"))):
         raise ValueError(f"not a volume: {raw}")
     return p
 
@@ -123,7 +123,8 @@ class Session:
     def snapshot(self) -> dict:
         with self.lock:
             return {"default_out": self.default_out, "running": self.running(), "device": getattr(self.engine, "_device", None),
-                    "progress": self.progress, "jobs": list(self.jobs)}
+                    "progress": self.progress, "jobs": list(self.jobs),
+                    "message": self.log[-1] if self.log else ""}
 
     # -- volumes and results -----------------------------------------------------------
 
@@ -146,7 +147,8 @@ class Session:
         if not pred.is_file():
             return None
         n = np.load(str(pred), mmap_mode="r").shape[0]
-        return (volume if volume.is_file() else None), pred, n, _predicted_slices(pred, n), False
+        has_input = volume.is_file() and volume.suffix.lower() in (".npy", ".vol")
+        return (volume if has_input else None), pred, n, _predicted_slices(pred, n), False
 
     def view_info(self, volume: Path, out_dir: Path) -> dict:
         v = self._view(volume, out_dir)

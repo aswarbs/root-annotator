@@ -407,7 +407,7 @@ class DropZone(QFrame):
         self.title = QLabel("Drag and drop your scans here")
         self.title.setObjectName("H2")
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.sub = QLabel("Volumes saved as .npy files, or a folder of slice images")
+        self.sub = QLabel("CT volumes (.vol or .npy), or a folder of slice images (TIFF)")
         self.sub.setObjectName("Mute")
         self.sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         row = QHBoxLayout()

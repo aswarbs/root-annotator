@@ -5,6 +5,7 @@ app.core.session.Session; the screens in app/ui/pages.py only draw state and emi
 file is the controller between the two: it owns the UI state, polls the session twice a second and
 pushes what it finds into whichever screen is showing.
 """
+import re
 import subprocess
 import sys
 import time
@@ -27,6 +28,12 @@ from .ui.widgets import Stepper, button, icon_button, to_pixmap
 
 UPLOAD, SEGMENT, REVIEW, EXPORT = range(4)
 STEP_NAMES = ["Upload", "Segment", "Review", "Export"]
+
+
+def _covers(pick: Path, volume: Path) -> bool:
+    """True if `volume` was found through `pick`: the pick is the volume, a folder above it, or (for a
+    slice scan picked via its `input` folder) a folder inside it."""
+    return volume == pick or pick in volume.parents or volume in pick.parents
 
 
 class MainWindow(QMainWindow):
@@ -241,7 +248,7 @@ class MainWindow(QMainWindow):
 
     def _add_files(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(self, "Choose volumes", self.settings.value("last_dir", ""),
-                                                "NumPy volumes (*.npy)")
+                                                "Volumes (*.npy *.vol)")
         for f in files:
             self.settings.setValue("last_dir", str(Path(f).parent))
             self._add(f, False)
@@ -256,7 +263,7 @@ class MainWindow(QMainWindow):
     def _dropped(self, paths) -> None:
         for raw in paths:
             p = Path(raw)
-            if p.is_dir() or p.suffix.lower() == ".npy":
+            if p.is_dir() or p.suffix.lower() in (".npy", ".vol"):
                 self._add(str(p), p.is_dir())
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
@@ -384,8 +391,7 @@ class MainWindow(QMainWindow):
     def _redo_pick(self, pick: str) -> None:
         """Queue (or un-queue) every already-segmented volume under that file or folder for a redo."""
         pp = Path(pick)
-        paths = [v["path"] for v in self.volumes
-                 if v["done"] and (Path(v["path"]) == pp or pp in Path(v["path"]).parents)]
+        paths = [v["path"] for v in self.volumes if v["done"] and _covers(pp, Path(v["path"]))]
         if not paths:
             return
         if all(p in self.redo_marked for p in paths):   # second click takes it off the list again
@@ -452,7 +458,7 @@ class MainWindow(QMainWindow):
         rows = []
         for p in self.chosen:
             pp = Path(p)
-            under = [v for v in self.volumes if Path(v["path"]) == pp or pp in Path(v["path"]).parents]
+            under = [v for v in self.volumes if _covers(pp, Path(v["path"]))]
             n = len(under)
             done = sum(1 for v in under if v["done"] and v["path"] not in self.redo_marked)
             queued = sum(1 for v in under if v["path"] in self.redo_marked)
@@ -513,7 +519,7 @@ class MainWindow(QMainWindow):
             ready = snap["progress"] > 0 or done > 0
             overall = (done + snap["progress"]) / max(n, 1)
             sp.set_progress(overall if ready else None, f"{round(overall * 100)}% complete" if ready
-                            else "Getting ready…")
+                            else self._prep_text(snap.get("message", "")))
             note = ""
             if snap.get("device") == "cpu":
                 note = "No compatible graphics card was found, so this will take longer."
@@ -524,6 +530,16 @@ class MainWindow(QMainWindow):
             sp.set_progress(1.0, "Done")
             sp.note.setText("")
             sp.review_btn.setEnabled(self._reachable(REVIEW))
+
+    @staticmethod
+    def _prep_text(message: str) -> str:
+        """What the app is doing before the first slice is segmented, in plain words."""
+        m = re.search(r"stacking slices (\d+)/(\d+)", message)
+        if m:
+            return f"Preparing the scan: slice {m.group(1)} of {m.group(2)}"
+        if "loading" in message:
+            return "Loading the model…"
+        return "Getting ready…"
 
     def _render_review(self) -> None:
         rp = self.review_page

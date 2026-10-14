@@ -90,6 +90,15 @@ and it finds every scan underneath (up to 3 levels). `output`/`ouput` folders (g
 the run); 16-bit slices are stretched to 0-255 using the scan's 0.5-99.5 percentile range, 8-bit
 slices are copied as-is. Stacking takes ~2 minutes per scan. The conversion settings are recorded in the output sidecar JSON.
 
+The app also accepts **`.vol` reconstructions** from the CT scanner (e.g. `D:\Sept CT data`). The
+volume size is read from the `.pcr` file with the same name next to it; the data type (uint8, uint16
+or float32) is inferred from the file size. The `.tif`/`.pca`/`.vgl` files and `*_Annotated` folders
+beside a `.vol` are ignored. Like 16-bit slice folders, the volume is converted slice by slice to a
+temporary uint8 `.npy` in `<out-dir>/_stacked/` (0.5-99.5 percentile stretch, recorded in the sidecar
+JSON) and deleted after the run. These files are large (the rice scans are ~15 billion voxels): the
+results drive needs roughly 3 bytes per voxel free during a run, and the app checks this before it
+starts.
+
 ## Output
 
 Every prediction is also written as a **TIFF stack**: a folder `<stem>_rootseg_pred_tiff/` with one

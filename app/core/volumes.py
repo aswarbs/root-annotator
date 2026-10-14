@@ -1,12 +1,15 @@
 """Turns a mix of file/folder inputs into a flat, deduplicated list of volumes, and stacks
 slice-folder scans (D:\\rootCT layout) into .npy volumes the engines can load.
 
-Two input kinds are understood:
+Three input kinds are understood:
   * a ``.npy`` volume, shape (Z, H, W), uint8
+  * a ``.vol`` reconstruction from a datos|x / VG-style CT scanner: a headerless raw volume whose
+    size is read from the ``.pcr`` file next to it (uint8, uint16 or float32, inferred from the file size)
   * a scan folder: a directory of 2D slice images (.tif/.tiff/.bmp, one file per z-slice, sorted
     by name). Either the slice folder itself, or its parent containing an ``*input*`` slice folder
     next to an ``*output*`` (ground-truth) folder, which is ignored.
 """
+import configparser
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
@@ -15,6 +18,7 @@ from .tiffstack import TIFF_DIR_SUFFIXES
 import numpy as np
 
 SLICE_EXTS = {".tif", ".tiff", ".bmp"}
+VOL_EXT = ".vol"
 _MAX_DEPTH = 3
 _STATS_SLICES = 64  # slices sampled for the 16-bit -> 8-bit percentile stretch
 _P_LOW, _P_HIGH = 0.5, 99.5
@@ -31,7 +35,7 @@ def _is_derived_npy(f: Path) -> bool:
 def _is_output_name(name: str) -> bool:
     n = name.lower()
     # the dataset has an "ouput" folder typo; our own TIFF-stack annotations are not scans either
-    return "output" in n or "ouput" in n or n.endswith(TIFF_DIR_SUFFIXES)
+    return "output" in n or "ouput" in n or "annotat" in n or n.endswith(TIFF_DIR_SUFFIXES)
 
 
 def _is_input_name(name: str) -> bool:
@@ -61,10 +65,18 @@ def _input_slice_dir(scan: Path) -> Optional[Path]:
     return None
 
 
+def is_vol(p: Path) -> bool:
+    return p.is_file() and p.suffix.lower() == VOL_EXT
+
+
 def _find_scans(d: Path, depth: int, found: set) -> None:
     for f in sorted(d.glob("*.npy")):
         if not _is_derived_npy(f):
             found.add(f.resolve())
+    vols = [f for f in sorted(d.iterdir()) if is_vol(f)]
+    if vols:  # a scanner export folder: the .vol is the scan, the .tif/.pca/... around it are not
+        found.update(f.resolve() for f in vols)
+        return
     if _input_slice_dir(d) is not None and not _is_output_name(d.name):
         # a slice folder named *input* stands for its parent scan folder
         found.add((d.parent if slice_files(d) and _is_input_name(d.name) else d).resolve())
@@ -85,11 +97,65 @@ def discover_volumes(inputs: Iterable) -> List[Path]:
         p = Path(raw)
         if p.is_dir():
             _find_scans(p, 0, found)
-        elif p.is_file() and p.suffix.lower() == ".npy":
+        elif p.is_file() and p.suffix.lower() in (".npy", VOL_EXT):
             found.add(p.resolve())
         else:
-            raise FileNotFoundError(f"not a .npy file or a folder: {p}")
+            raise FileNotFoundError(f"not a .npy/.vol file or a folder: {p}")
     return sorted(found)
+
+
+def vol_info(vol: Path) -> dict:
+    """Shape (Z, Y, X), dtype and voxel size of a raw ``.vol``, from its ``.pcr`` description."""
+    vol = Path(vol)
+    pcr = vol.with_suffix(".pcr")
+    if not pcr.is_file():
+        others = sorted(vol.parent.glob("*.pcr"))
+        if len(others) != 1:
+            raise ValueError(f"{vol.name}: no matching .pcr file next to it, so its size is unknown")
+        pcr = others[0]
+    cp = configparser.ConfigParser(interpolation=None, strict=False)
+    cp.read(str(pcr), encoding="latin-1")
+    try:
+        sec = cp["VolumeData"]
+        x, y, z = (int(sec[f"volume_size{a}"]) for a in "xyz")
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"{pcr.name}: could not read Volume_SizeX/Y/Z ({exc})") from exc
+    n, size = x * y * z, vol.stat().st_size
+    if n <= 0 or size % n:
+        raise ValueError(f"{vol.name}: file size {size} does not match {x} x {y} x {z} voxels from {pcr.name}")
+    dtype = {1: np.uint8, 2: np.uint16, 4: np.float32}.get(size // n)
+    if dtype is None:
+        raise ValueError(f"{vol.name}: {size // n} bytes per voxel is not supported (expected 1, 2 or 4)")
+    try:
+        voxel = float(sec.get("voxelsizerec", "0") or 0)
+    except ValueError:
+        voxel = 0.0
+    return {"shape": (z, y, x), "dtype": np.dtype(dtype), "voxel_size": voxel, "pcr": str(pcr)}
+
+
+def open_volume(path: Path):
+    """The volume as a read-only (Z, H, W) array backed by the file (.npy or raw .vol)."""
+    path = Path(path)
+    if is_vol(path):
+        info = vol_info(path)
+        return np.memmap(str(path), dtype=info["dtype"], mode="r", shape=info["shape"])
+    return np.load(str(path), mmap_mode="r")
+
+
+def volume_voxels(volume: Path) -> int:
+    """Voxel count of a volume or scan folder (used to check disk space before a run)."""
+    volume = Path(volume)
+    if volume.is_dir():
+        src = _input_slice_dir(volume)
+        files = slice_files(src) if src else []
+        if not files:
+            return 0
+        from PIL import Image
+        with Image.open(files[0]) as im:
+            return len(files) * im.size[0] * im.size[1]
+    if is_vol(volume):
+        return int(np.prod(vol_info(volume)["shape"], dtype=np.int64))
+    return int(np.prod(np.load(str(volume), mmap_mode="r").shape, dtype=np.int64))
 
 
 def _to_uint8(a: np.ndarray, lo: float, hi: float) -> np.ndarray:
@@ -154,4 +220,50 @@ def stack_scan_to_npy(
         "source_bit_depth": 16 if is_16bit else 8,
         "stretch_percentiles": [_P_LOW, _P_HIGH] if is_16bit else None,
         "stretch_range": [lo, hi] if is_16bit else None,
+    }
+
+
+def stack_vol_to_npy(
+    vol_path: Path, out_npy: Path, progress_cb: Optional[Callable[[str, Optional[float]], None]] = None,
+    cancel_cb: Optional[Callable[[], bool]] = None,
+) -> dict:
+    """Converts a raw ``.vol`` to a uint8 (Z, H, W) .npy at `out_npy`, slice by slice (volumes are
+    tens of GB). uint16 / float32 data is stretched to 0-255 with the 0.5-99.5 percentile range of
+    the whole volume, as for 16-bit slice folders; uint8 data is copied as-is."""
+    vol_path = Path(vol_path)
+    info = vol_info(vol_path)
+    src = open_volume(vol_path)
+    Z, H, W = info["shape"]
+    is_u8 = info["dtype"] == np.uint8
+    lo = hi = 0.0
+    if not is_u8:
+        idx = np.linspace(0, Z - 1, min(_STATS_SLICES, Z)).astype(int)
+        sample = np.concatenate([np.asarray(src[i]).ravel()[::17] for i in idx]).astype(np.float32)
+        lo, hi = (float(v) for v in np.percentile(sample, [_P_LOW, _P_HIGH]))
+
+    out_npy.parent.mkdir(parents=True, exist_ok=True)
+    out = np.lib.format.open_memmap(str(out_npy), mode="w+", dtype=np.uint8, shape=(Z, H, W))
+    try:
+        for z in range(Z):
+            if cancel_cb and cancel_cb():
+                raise RuntimeError("cancelled")
+            out[z] = _to_uint8(np.asarray(src[z]), lo, hi)
+            if progress_cb and (z % 100 == 0 or z == Z - 1):
+                progress_cb(f"{vol_path.name}: stacking slices {z + 1}/{Z}", None)
+        out.flush()
+    except BaseException:
+        del out, src
+        out_npy.unlink(missing_ok=True)
+        raise
+    del out, src
+
+    return {
+        "source_format": "vol",
+        "source_file": str(vol_path),
+        "n_slices": Z,
+        "source_dtype": info["dtype"].name,
+        "source_bit_depth": info["dtype"].itemsize * 8,
+        "voxel_size_mm": info["voxel_size"] or None,
+        "stretch_percentiles": None if is_u8 else [_P_LOW, _P_HIGH],
+        "stretch_range": None if is_u8 else [lo, hi],
     }

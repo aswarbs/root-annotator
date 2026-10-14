@@ -28,8 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--input", required=True, nargs="+",
-        help=".npy volume file(s), slice-folder scans (tif/bmp stacks, e.g. D:\\rootCT\\barley\\M16605), "
-             "and/or folders containing either",
+        help=".npy / .vol volume file(s), slice-folder scans (tif/bmp stacks, e.g. D:\\rootCT\\barley\\M16605), "
+             "and/or folders containing any of these",
     )
     parser.add_argument("--out-dir", required=True, help="where predictions + provenance JSON are written")
     parser.add_argument("--clean", action="store_true",

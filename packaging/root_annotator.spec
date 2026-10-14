@@ -46,7 +46,10 @@ a = Analysis(
     pathex=[str(PROJECT_ROOT)],
     binaries=[],
     datas=datas,
-    hiddenimports=["PyQt6.sip"],
+    # main.py imports the app by name at run time, so list its entry modules here: the analysis then
+    # follows their imports (torch, PyQt6, numpy, scipy, PIL ...). The app's own modules are removed
+    # from the archive again below and shipped as plain files instead.
+    hiddenimports=["PyQt6.sip", "app.gui", "app.cli", "app.web.server"],
     hookspath=[],
     runtime_hooks=[],
     excludes=["matplotlib", "skimage", "tensorboard", "plotly", "nibabel"],  # scipy is needed (clean-up)

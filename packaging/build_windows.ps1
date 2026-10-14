@@ -12,7 +12,7 @@ if (-not (Test-Path ".venv312")) {
 $Python = ".venv312\Scripts\python.exe"
 & $Python -m pip install --upgrade pip -q
 & $Python -m pip install "torch==2.14.0+cu126" --index-url https://download.pytorch.org/whl/cu126
-& $Python -m pip install -r requirements.txt
+& $Python -m pip install -r requirements.txt -r packaging/requirements-build.txt
 
 Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
 & $Python -m PyInstaller packaging\root_annotator.spec --noconfirm

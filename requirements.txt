@@ -5,4 +5,3 @@ numpy>=1.24
 scipy>=1.10
 Pillow>=10.0
 PyQt6>=6.6
-pyinstaller>=6.10

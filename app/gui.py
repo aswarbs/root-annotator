@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from .core.engine import expected_output
 from .core.postprocess import clean_path_for
+from . import updater
 from .core.session import Session
 from .ui import theme
 from .ui.pages import ExportPage, ReviewPage, SegmentPage, UploadPage
@@ -28,6 +29,11 @@ from .ui.widgets import Stepper, button, icon_button, to_pixmap
 
 UPLOAD, SEGMENT, REVIEW, EXPORT = range(4)
 STEP_NAMES = ["Upload", "Segment", "Review", "Export"]
+
+
+def _app_version() -> str:
+    """Short commit hash of the running code ('' for a source checkout without a VERSION file)."""
+    return updater.current_version()[:7]
 
 
 def _covers(pick: Path, volume: Path) -> bool:
@@ -39,7 +45,8 @@ def _covers(pick: Path, volume: Path) -> bool:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Root Annotator")
+        version = _app_version()
+        self.setWindowTitle("Root Annotator" + (f"  ·  {version}" if version else ""))
         self.setAcceptDrops(True)
         self.resize(1180, 800)
         self.setMinimumSize(980, 680)
@@ -83,6 +90,10 @@ class MainWindow(QMainWindow):
         self.want_key = None
         self.actions_sig = None
         self.thumbs = {}
+
+        self.update_ready = None   # set from the updater thread when newer code has been downloaded
+        self._update_announced = False
+        updater.check_in_background(lambda info: setattr(self, "update_ready", info))
 
         self._build()
         self._changed(save=False)
@@ -800,6 +811,10 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ polling
 
     def _tick(self) -> None:
+        if self.update_ready and not self._update_announced:
+            self._update_announced = True
+            if not self.notice:
+                self.notice = "An update was downloaded. Close and reopen Root Annotator to use it."
         self.snap = self.session.snapshot()
         running = self.snap["running"]
         jobs = self.snap["jobs"]

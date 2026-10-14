@@ -16,7 +16,7 @@ fi
 PYTHON=".venv312/bin/python"
 "$PYTHON" -m pip install --upgrade pip -q
 "$PYTHON" -m pip install "torch==2.14.0+cu126" --index-url https://download.pytorch.org/whl/cu126
-"$PYTHON" -m pip install -r requirements.txt
+"$PYTHON" -m pip install -r requirements.txt -r packaging/requirements-build.txt
 
 rm -rf build dist
 "$PYTHON" -m PyInstaller packaging/root_annotator.spec --noconfirm

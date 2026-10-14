@@ -14,3 +14,8 @@ installer/
 !app/rootseg/checkpoints/*.pt
 *.proj.npz
 temp/
+
+# local runtime files
+error_log.txt
+update.log
+.venv/

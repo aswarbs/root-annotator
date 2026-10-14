@@ -9,6 +9,7 @@
 #
 # PyInstaller cannot cross-compile: run this file on Windows to get the Windows build, and on
 # Linux (or in WSL) to get the Linux build -- see build_windows.ps1 / build_linux.sh.
+import subprocess
 import sys
 from pathlib import Path
 
@@ -24,6 +25,22 @@ datas = [
     (str(PROJECT_ROOT / "app" / "web" / "static"), "app/web/static"),
 ]
 
+# The app's own .py files ship as plain data (not inside the compiled archive), so a newer copy
+# downloaded by app/updater.py can take their place -- see main.py. The third-party packages they
+# import (torch, PyQt6, numpy, scipy, PIL) are still discovered and bundled by the analysis below.
+APP_DIR = PROJECT_ROOT / "app"
+for f in APP_DIR.rglob("*.py"):
+    datas.append((str(f), str(Path("app") / f.relative_to(APP_DIR).parent)))
+
+# VERSION = commit this build was made from; the updater compares it with GitHub's latest commit.
+try:
+    _sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True).strip()
+except Exception:
+    _sha = ""
+_version_file = Path(SPECPATH) / "VERSION"  # noqa: F821
+_version_file.write_text(_sha, encoding="utf-8")
+datas.append((str(_version_file), "."))
+
 a = Analysis(
     [str(PROJECT_ROOT / "main.py")],
     pathex=[str(PROJECT_ROOT)],
@@ -32,10 +49,12 @@ a = Analysis(
     hiddenimports=["PyQt6.sip"],
     hookspath=[],
     runtime_hooks=[],
-    excludes=["matplotlib", "skimage", "tensorboard", "plotly", "nibabel"]  # scipy is needed (clean-up),
+    excludes=["matplotlib", "skimage", "tensorboard", "plotly", "nibabel"],  # scipy is needed (clean-up)
     noarchive=False,
     cipher=block_cipher,
 )
+# Keep `app` out of the compiled archive so the copy on disk (bundled or downloaded) is what loads.
+a.pure = [m for m in a.pure if not (m[0] == "app" or m[0].startswith("app."))]
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(

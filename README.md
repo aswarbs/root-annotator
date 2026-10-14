@@ -145,3 +145,24 @@ target GPU turns out to need a different CUDA version, change the `cu126` index/
 
 **Size**: bundling CUDA-enabled PyTorch makes each build a few GB; expect the full USB payload
 (both platform builds, if you build both) to land somewhere around 5-8GB.
+
+## Remote updates for the installed (PyInstaller) app
+
+The installer bundles Python, PyTorch and Qt, so the target machine needs nothing else. The app's
+own code is shipped separately from those libraries and can update itself:
+
+- On launch, a packaged build asks GitHub (`aswarbs/root-annotator`, branch `main`) for the latest
+  commit. If it differs from the one the installer was built from (`VERSION`), it downloads just the
+  `app/` folder (about 2 MB) to `%LOCALAPPDATA%\RootAnnotator\code_next` in the background.
+- The next launch promotes that folder to `code` and loads it instead of the bundled copy. A notice
+  in the window says when an update is waiting. The window title shows the running commit.
+- If the new code fails to import, it is moved to `code_broken` and the bundled version runs, so a
+  bad push can't lock the machine out. Details go to `error_log.txt`.
+- To ship an update: commit and push to `main`. That is all.
+
+Dependencies are the limit: a change that needs a new or upgraded third-party package (torch, numpy,
+PyQt6 ...) still needs a rebuilt installer (`packaging/build_windows.ps1`, then Inno Setup).
+
+For a private repo, put a read-only fine-grained token (Contents: read, this repo only) in
+`%LOCALAPPDATA%\RootAnnotator\update.token` once. `update.json` in the same folder can override
+`{"repo": "owner/name", "branch": "main"}`.
